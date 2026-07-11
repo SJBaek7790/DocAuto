@@ -123,24 +123,26 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
 
             page.wait_for_selector("button", timeout=DEFAULT_TIMEOUT_MS)
 
-            # 이미 출석한 경우
-            # count() > 0 만으로는 DOM에 숨겨진 버튼도 감지해 오판할 수 있다.
-            # HMP와 동일한 패턴 — 반드시 is_visible()로 추가 확인한다.
-            already_done = page.locator('button:has-text("출석완료")')
-            if already_done.count() > 0 and already_done.first.is_visible():
-                result["status"] = "already_done"
-                result["message"] = "오늘 이미 출석체크 완료된 상태."
-                browser.close()
-                return result
-
+            # "출석체크하기"를 먼저 확인한다.
+            # 달력형 페이지에는 이전 날짜의 "출석완료" 버튼도 여러 개 존재해서,
+            # already_done을 먼저 체크하면 오늘 미출석 상태에서도 already_done을
+            # 반환하는 오판이 생김(2026-07-12 확인). 순서를 뒤집어 출석체크하기가
+            # visible이면 무조건 클릭하고, 없을 때만 already_done으로 처리한다.
             attend_btn = page.locator('button:has-text("출석체크하기")')
-            if attend_btn.count() == 0:
+            if attend_btn.count() > 0 and attend_btn.first.is_visible():
+                attend_btn.first.click()
+            else:
+                # 출석체크하기 버튼이 없으면 → 이미 완료 또는 페이지 구조 문제
+                already_done = page.locator('button:has-text("출석완료")')
+                if already_done.count() > 0 and already_done.first.is_visible():
+                    result["status"] = "already_done"
+                    result["message"] = "오늘 이미 출석체크 완료된 상태."
+                    browser.close()
+                    return result
                 result["message"] = "출석체크하기 버튼을 찾을 수 없음 — 페이지 구조 변경 가능성."
                 result["screenshot"] = save_failure_screenshot(page, account)
                 browser.close()
                 return result
-
-            attend_btn.first.click()
 
             # "광고보고 출석하기" 팝업 처리 — 새 탭이 뜰 수 있으므로 대비
             ad_btn = page.locator('button:has-text("광고보고 출석하기")')
