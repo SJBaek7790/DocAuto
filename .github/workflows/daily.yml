@@ -2,8 +2,8 @@ name: 일일 의료 포털 자동화
 
 on:
   schedule:
-    - cron: '0 23 * * *'  # 매일 08:00 KST (UTC 23:00 전날)
-  workflow_dispatch:        # 수동 실행 (Actions 탭에서 "Run workflow")
+    - cron: '1 23 * * *'  # 매일 08:01 KST (UTC 23:01 전날)
+  workflow_dispatch:        # 수동 실행 (Actions 탭 → "Run workflow")
 
 jobs:
   daily-routine:
@@ -30,57 +30,12 @@ jobs:
           CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
         run: echo "$CREDENTIALS_JSON" > credentials.json
 
-      # ── 키메디 ──────────────────────────────────────────────
-      - name: 키메디 출석 (bjh7790)
-        id: keymedi
-        run: python3 scripts/keymedi.py
-        continue-on-error: true
+      - name: 일일 자동화 실행
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 scripts/daily_runner.py
 
-      - name: 키메디 결과
-        run: echo "keymedi → ${{ steps.keymedi.outcome }}"
-
-      # ── HMP ─────────────────────────────────────────────────
-      - name: HMP 캡슐 출석 (bjh7790)
-        id: hmp
-        run: python3 scripts/hmp.py
-        continue-on-error: true
-
-      - name: HMP 결과
-        run: echo "hmp → ${{ steps.hmp.outcome }}"
-
-      # ── 닥터빌 bjh7790 ──────────────────────────────────────
-      - name: 닥터빌 출석 (bjh7790)
-        id: dv_attend_bjh
-        run: python3 scripts/doctorville.py --account bjh7790 --task attend
-        continue-on-error: true
-
-      - name: 닥터빌 퀴즈 (bjh7790)
-        id: dv_quiz_bjh
-        run: python3 scripts/doctorville.py --account bjh7790 --task quiz
-        continue-on-error: true
-
-      - name: 닥터빌 세미나 (bjh7790)
-        id: dv_seminar_bjh
-        run: python3 scripts/doctorville.py --account bjh7790 --task seminar
-        continue-on-error: true
-
-      # ── 닥터빌 wonju ────────────────────────────────────────
-      - name: 닥터빌 출석 (wonju)
-        id: dv_attend_wonju
-        run: python3 scripts/doctorville.py --account wonju --task attend
-        continue-on-error: true
-
-      - name: 닥터빌 퀴즈 (wonju)
-        id: dv_quiz_wonju
-        run: python3 scripts/doctorville.py --account wonju --task quiz
-        continue-on-error: true
-
-      - name: 닥터빌 세미나 (wonju)
-        id: dv_seminar_wonju
-        run: python3 scripts/doctorville.py --account wonju --task seminar
-        continue-on-error: true
-
-      # ── 로그 보존 ───────────────────────────────────────────
       - name: 스크린샷 로그 업로드
         if: always()
         uses: actions/upload-artifact@v4

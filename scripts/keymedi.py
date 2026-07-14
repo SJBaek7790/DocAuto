@@ -121,15 +121,38 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                 if "/mypage/attendance" not in page.url:
                     page.goto(ATTENDANCE_URL, wait_until="domcontentloaded")
 
-            page.wait_for_selector("button", timeout=DEFAULT_TIMEOUT_MS)
+            # 출석 관련 버튼(출석체크하기 or 출석완료)이 실제로 로드될 때까지 대기.
+            # 범용 button 출현만 기다리면 네비/기타 버튼이 먼저 뜨는 시점에 count 체크를
+            # 해버려 출석 버튼이 아직 없다 → else → already_done 오판이 발생함
+            # (2026-07-14 확인). 출석 버튼 중 하나가 나타날 때까지 명시적으로 기다린다.
+            try:
+                page.wait_for_selector(
+                    'button:has-text("출석체크하기"), button:has-text("출석완료")',
+                    timeout=DEFAULT_TIMEOUT_MS,
+                )
+            except PlaywrightTimeoutError:
+                result["message"] = "출석 버튼(출석체크하기/출석완료)이 로드되지 않음 — 페이지 구조 변경 또는 로그인 실패 가능성."
+                result["screenshot"] = save_failure_screenshot(page, account)
+                browser.close()
+                return result
 
             # "출석체크하기"를 먼저 확인한다.
             # 달력형 페이지에는 이전 날짜의 "출석완료" 버튼도 여러 개 존재해서,
             # already_done을 먼저 체크하면 오늘 미출석 상태에서도 already_done을
             # 반환하는 오판이 생김(2026-07-12 확인). 순서를 뒤집어 출석체크하기가
-            # visible이면 무조건 클릭하고, 없을 때만 already_done으로 처리한다.
+            # 존재하면 무조건 클릭하고, 없을 때만 already_done으로 처리한다.
+            #
+            # 주의: is_visible() 체크를 제거함(2026-07-13 수정).
+            # 달력이 세로로 길어 오늘 날짜 버튼이 초기 뷰포트 밖에 위치하는 경우
+            # is_visible() → False → else 분기 → 이전 날짜 "출석완료" 를 already_done
+            # 으로 오판하는 버그 재발. 버튼이 count > 0 이면 scroll 후 클릭한다.
             attend_btn = page.locator('button:has-text("출석체크하기")')
-            if attend_btn.count() > 0 and attend_btn.first.is_visible():
+            if attend_btn.count() > 0:
+                try:
+                    attend_btn.first.scroll_into_view_if_needed()
+                    page.wait_for_timeout(500)
+                except Exception:
+                    pass
                 attend_btn.first.click()
             else:
                 # 출석체크하기 버튼이 없으면 → 이미 완료 또는 페이지 구조 문제
