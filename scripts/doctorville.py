@@ -37,10 +37,11 @@ import argparse
 import json
 import re
 import sys
-import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+import common
 
 DOCTORVILLE_BASE    = "https://www.doctorville.co.kr"
 ATTEND_URL          = f"{DOCTORVILLE_BASE}/event/attend"
@@ -50,7 +51,6 @@ SEMINAR_MAIN_URL    = f"{DOCTORVILLE_BASE}/seminar/main"
 
 DEFAULT_TIMEOUT_MS  = 30000
 SCRIPT_DIR          = Path(__file__).resolve().parent
-LOG_DIR             = SCRIPT_DIR / "logs"
 QUIZ_ANSWERS_PATH   = SCRIPT_DIR.parent / "quiz_answers.json"
 
 
@@ -59,8 +59,7 @@ QUIZ_ANSWERS_PATH   = SCRIPT_DIR.parent / "quiz_answers.json"
 # ---------------------------------------------------------------------------
 
 def load_credentials(path: Path, account: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = common.read_credentials(path)
     if account not in data:
         raise KeyError(f"credentials.json에 '{account}' 계정이 없습니다.")
     acc = data[account]
@@ -78,14 +77,7 @@ def load_quiz_answers() -> dict:
 
 
 def save_screenshot(page, tag: str) -> str:
-    LOG_DIR.mkdir(exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    path = LOG_DIR / f"doctorville_{tag}_{ts}.png"
-    try:
-        page.screenshot(path=str(path), full_page=True)
-        return str(path)
-    except Exception:
-        return ""
+    return common.save_screenshot(page, f"doctorville_{tag}")
 
 
 # ---------------------------------------------------------------------------

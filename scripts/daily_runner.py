@@ -4,14 +4,18 @@
 
 실행 순서:
   1. 키메디 출석 (bjh7790)
-  2. 닥터빌 출석+퀴즈+세미나 (bjh7790)
-  3. 닥터빌 출석+퀴즈+세미나 (wonju)
-  4. 결과를 텔레그램 bot으로 전송
+  2. HMP 캡슐 출석 (bjh7790)
+  3. 닥터빌 출석+퀴즈+세미나 (bjh7790)
+  4. 닥터빌 출석+퀴즈+세미나 (wonju)
+  5. 결과를 텔레그램 bot으로 전송
+
+로컬(venv)·GitHub Actions(전역 pip) 양쪽에서 동일하게 동작한다.
+서브프로세스는 현재 인터프리터(sys.executable)로 실행하므로 별도 venv 경로가 필요없다.
 
 용법:
-    ~/Desktop/DocAuto/venv/bin/python3 ~/Desktop/DocAuto/scripts/daily_runner.py
-    ~/Desktop/DocAuto/venv/bin/python3 ~/Desktop/DocAuto/scripts/daily_runner.py --headed
-    ~/Desktop/DocAuto/venv/bin/python3 ~/Desktop/DocAuto/scripts/daily_runner.py --no-telegram
+    python3 scripts/daily_runner.py                # 로컬은 venv/bin/python3 로 호출
+    python3 scripts/daily_runner.py --headed       # 브라우저 창 표시 (디버깅)
+    python3 scripts/daily_runner.py --no-telegram  # 텔레그램 전송 건너뜀
 """
 
 import argparse
@@ -25,7 +29,10 @@ from pathlib import Path
 from datetime import datetime
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-VENV_PYTHON = SCRIPT_DIR.parent / "venv" / "bin" / "python3"
+# 현재 실행 중인 인터프리터를 그대로 사용한다.
+# - 로컬: venv/bin/python3 로 호출 → sys.executable == venv python
+# - GitHub Actions: 전역 pip 설치 → sys.executable == 러너 python (venv 없음)
+PYTHON = sys.executable
 
 # 환경변수 우선(GitHub Actions secrets), 없으면 credentials.json에서 로드
 # 코드에 토큰을 하드코딩하지 않는다.
@@ -51,7 +58,7 @@ def load_telegram_credentials(credentials_path: str) -> None:
 def run_script(script_name: str, extra_args: list[str] = None) -> dict:
     """서브프로세스로 스크립트를 실행하고 stdout JSON을 파싱해 반환한다."""
     script_path = SCRIPT_DIR / script_name
-    cmd = [str(VENV_PYTHON), str(script_path)] + (extra_args or [])
+    cmd = [PYTHON, str(script_path)] + (extra_args or [])
     try:
         proc = subprocess.run(
             cmd,
@@ -87,51 +94,67 @@ def format_status_emoji(status: str) -> str:
     return {"success": "✅", "already_done": "☑️", "skipped": "⏭️", "no_answer": "❓", "failed": "❌"}.get(status, "❓")
 
 
+def format_doctorville_block(label: str, dv: dict) -> list[str]:
+    """닥터빌 계정 하나의 결과를 텔레그램 라인 리스트로 변환한다.
+
+    스크립트가 통째로 실패해 attend/quiz/seminar 키가 없는 경우(예: 실행
+    예외·타임아웃·JSON 파싱 실패)에는 top-level status/message를 그대로 노출한다.
+    이 분기가 없으면 실패가 '건너뜀'으로 오표시된다.
+    """
+    lines = [f"*{label}*"]
+
+    if not any(k in dv for k in ("attend", "quiz", "seminar")):
+        e = format_status_emoji(dv.get("status", "failed"))
+        lines[0] = f"*{label}* {e}"
+        if dv.get("message"):
+            lines.append(f"  └ {dv['message']}")
+        return lines
+
+    for task_key, task_label in [("attend", "출석"), ("quiz", "퀴즈"), ("seminar", "세미나")]:
+        t = dv.get(task_key, {})
+        s = t.get("status", "skipped")
+        e = format_status_emoji(s)
+        pts = f" +{t['points']}P" if t.get("points") else ""
+        product = f" [{t['product']}]" if t.get("product") else ""
+        count = f" {t['count']}건" if t.get("count") else ""
+        detail = product or count
+        lines.append(f"  {task_label}: {e}{pts}{detail}")
+        if s in ("failed", "no_answer") and t.get("message"):
+            lines.append(f"    └ {t['message']}")
+    return lines
+
+
+def format_flat_block(label: str, r: dict, unit: str = "P") -> list[str]:
+    """keymedi/hmp 처럼 flat 한 {status, points, message} 결과를 라인으로 변환한다."""
+    e = format_status_emoji(r.get("status", "failed"))
+    pts = f" +{r['points']}{unit}" if r.get("points") else ""
+    lines = [f"*{label}* {e}{pts}"]
+    msg = r.get("message", "")
+    if msg and r.get("status") not in ("success", "already_done"):
+        lines.append(f"  └ {msg}")
+    # 룰렛 결과 (HMP 전용)
+    for slot in r.get("roulette", []):
+        re = format_status_emoji(slot.get("status", "failed"))
+        rpts = f" +{slot['points']}캡슐" if slot.get("points") else ""
+        lines.append(f"  🎡 룰렛: {re}{rpts} {slot.get('message', '')}")
+    return lines
+
+
 def format_telegram_message(results: dict, date_str: str) -> str:
     lines = [f"📋 *일일 자동화 결과* ({date_str})", ""]
 
-    # 키메디
-    km = results.get("keymedi", {})
-    e = format_status_emoji(km.get("status", "failed"))
-    pts = f" +{km['points']}P" if km.get("points") else ""
-    msg = km.get("message", "")
-    lines.append(f"*키메디 출석* {e}{pts}")
-    if msg and km.get("status") not in ("success", "already_done"):
-        lines.append(f"  └ {msg}")
-
+    lines += format_flat_block("키메디 출석", results.get("keymedi", {}))
+    lines.append("")
+    lines += format_flat_block("HMP 캡슐 출석", results.get("hmp", {}), unit="캡슐")
     lines.append("")
 
-    # 닥터빌 bjh7790
     dv_b = results.get("doctorville_bjh7790", {})
-    lines.append("*닥터빌 (승진)*")
-    for task_key, label in [("attend", "출석"), ("quiz", "퀴즈"), ("seminar", "세미나")]:
-        t = dv_b.get(task_key, {})
-        s = t.get("status", "skipped")
-        e = format_status_emoji(s)
-        pts = f" +{t['points']}P" if t.get("points") else ""
-        product = f" [{t['product']}]" if t.get("product") else ""
-        count = f" {t['count']}건" if t.get("count") else ""
-        detail = product or count
-        lines.append(f"  {label}: {e}{pts}{detail}")
-        if s in ("failed", "no_answer") and t.get("message"):
-            lines.append(f"    └ {t['message']}")
+    lines += format_doctorville_block("닥터빌 (승진)", dv_b)
 
     lines.append("")
 
-    # 닥터빌 wonju
     dv_w = results.get("doctorville_wonju", {})
-    lines.append("*닥터빌 (원주)*")
-    for task_key, label in [("attend", "출석"), ("quiz", "퀴즈"), ("seminar", "세미나")]:
-        t = dv_w.get(task_key, {})
-        s = t.get("status", "skipped")
-        e = format_status_emoji(s)
-        pts = f" +{t['points']}P" if t.get("points") else ""
-        product = f" [{t['product']}]" if t.get("product") else ""
-        count = f" {t['count']}건" if t.get("count") else ""
-        detail = product or count
-        lines.append(f"  {label}: {e}{pts}{detail}")
-        if s in ("failed", "no_answer") and t.get("message"):
-            lines.append(f"    └ {t['message']}")
+    lines += format_doctorville_block("닥터빌 (원주)", dv_w)
 
     # no_answer 안내
     no_answer_products = []
@@ -195,17 +218,21 @@ def main():
     date_str = datetime.now().strftime("%Y-%m-%d")
     results = {}
 
-    print("[1/3] 키메디 출석...")
+    print("[1/4] 키메디 출석...")
     results["keymedi"] = run_script("keymedi.py", extra)
     print(json.dumps(results["keymedi"], ensure_ascii=False))
 
-    print("[2/3] 닥터빌 (bjh7790)...")
+    print("[2/4] HMP 캡슐 출석...")
+    results["hmp"] = run_script("hmp.py", extra)
+    print(json.dumps(results["hmp"], ensure_ascii=False))
+
+    print("[3/4] 닥터빌 (bjh7790)...")
     results["doctorville_bjh7790"] = run_script(
         "doctorville.py", ["--account", "bjh7790"] + extra
     )
     print(json.dumps(results["doctorville_bjh7790"], ensure_ascii=False, indent=2))
 
-    print("[3/3] 닥터빌 (wonju)...")
+    print("[4/4] 닥터빌 (wonju)...")
     results["doctorville_wonju"] = run_script(
         "doctorville.py", ["--account", "wonju"] + extra
     )

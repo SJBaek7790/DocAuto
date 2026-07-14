@@ -50,20 +50,19 @@ end-to-end 테스트하지 못했다 (샌드박스가 hmp.co.kr에 접근 불가
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+import common
+
 ATTENDANCE_URL = "https://www.hmp.co.kr/event/attendanceRouletteMain.hm"
 DEFAULT_TIMEOUT_MS = 15000
 SCRIPT_DIR = Path(__file__).resolve().parent
-LOG_DIR = SCRIPT_DIR / "logs"
 
 
 def load_credentials(path: Path, account: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = common.read_credentials(path)
     if account not in data:
         raise KeyError(f"credentials.json에 '{account}' 계정이 없습니다.")
     if "hmp" not in data[account]:
@@ -77,15 +76,90 @@ def load_credentials(path: Path, account: str) -> dict:
     return {"id": login_id, "password": hmp["password"]}
 
 
-def save_failure_screenshot(page, account: str) -> str:
-    LOG_DIR.mkdir(exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    path = LOG_DIR / f"hmp_{account}_{ts}.png"
-    try:
-        page.screenshot(path=str(path), full_page=True)
-        return str(path)
-    except Exception:
-        return ""
+def _run_roulette(page, account: str) -> list[dict]:
+    """연속 출석 룰렛 자동화 (10·20·30일 달성 시 버튼 활성화).
+
+    참여 가능한 "룰렛 참여하기" 버튼(visible)을 모두 찾아 순서대로 처리한다.
+
+    확인된 흐름 (2026-07-14):
+      1. "룰렛 참여하기" 버튼 클릭 → 룰렛 휠이 페이지에 표시됨
+      2. #startAbled 버튼 클릭 → POST /ajax/event/rouelettePercentage.hm 호출
+      3. 결과 팝업 표시 (이미지 alt = "[마일리지] X 캡슐 적립 완료" 또는 상품권 텍스트)
+      4. "확인" 버튼 클릭으로 닫기
+
+    결과 구조:
+      [{"status": "success"|"failed", "points": int, "message": str}, ...]
+    """
+    results = []
+
+    for _attempt in range(3):  # 최대 3회 (10·20·30일)
+        # 참여 가능한 버튼(visible) 재탐색 — 클릭 후 버튼이 "참여 완료"로 바뀌므로 매번 새로 찾는다
+        all_btns = page.locator('button').all()
+        avail = [b for b in all_btns if b.is_visible() and b.inner_text().strip() == "룰렛 참여하기"]
+
+        if not avail:
+            break  # 더 이상 가능한 룰렛 없음
+
+        slot = {"status": "failed", "points": 0, "message": ""}
+
+        try:
+            avail[0].click()
+            page.wait_for_timeout(1500)  # 룰렛 휠 표시 대기
+
+            # START 버튼 클릭
+            start_btn = page.locator('#startAbled')
+            try:
+                start_btn.wait_for(state="visible", timeout=5000)
+            except PlaywrightTimeoutError:
+                slot["message"] = "START 버튼이 표시되지 않음"
+                results.append(slot)
+                continue
+
+            start_btn.click()
+
+            # 룰렛 애니메이션 대기 (약 4초) + 결과 팝업 대기
+            page.wait_for_timeout(5000)
+
+            # 당첨 결과 읽기 — 각 캡슐 수량에 대응하는 이미지 alt로 판별
+            won_capsules = 0
+            won_msg = ""
+            for amount in [1500, 1000, 700, 500, 200, 100]:
+                img = page.locator(f'img[alt="[마일리지] {amount} 캡슐 적립 완료"]')
+                if img.count() > 0 and img.first.is_visible():
+                    won_capsules = amount
+                    won_msg = f"{amount}캡슐 당첨"
+                    break
+
+            # 상품권 당첨 확인
+            if not won_msg:
+                if page.locator('text=GS25 5000원 상품권').count() > 0 and \
+                   page.locator('text=GS25 5000원 상품권').first.is_visible():
+                    won_msg = "GS25 5000원 상품권 당첨"
+                elif page.locator('text=스타벅스').count() > 0 and \
+                     page.locator('text=스타벅스').first.is_visible():
+                    won_msg = "스타벅스 아이스 아메리카노 당첨"
+
+            if not won_msg:
+                won_msg = "룰렛 참여 완료 (결과 팝업 감지 실패)"
+
+            # 확인 버튼 클릭 (보이는 것만)
+            for cb in page.locator('button:has-text("확인")').all():
+                if cb.is_visible():
+                    cb.click()
+                    page.wait_for_timeout(500)
+                    break
+
+            slot["status"] = "success"
+            slot["points"] = won_capsules
+            slot["message"] = won_msg
+
+        except Exception as e:
+            slot["message"] = f"룰렛 처리 예외: {e}"
+            common.save_screenshot(page, f"hmp_{account}_roulette")
+
+        results.append(slot)
+
+    return results
 
 
 def run(account: str, credentials_path: Path, headless: bool) -> dict:
@@ -103,31 +177,23 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
             # domcontentloaded만으로는 버튼이 아직 DOM에 없을 수 있다.
             page.goto(ATTENDANCE_URL, wait_until="load")
 
-            # 로그인 필요 여부 확인 — HMP는 미로그인 시 실제로 /login/loginForm.hm 로
-            # 리다이렉트되는 것을 확인했으나(keymedi와 다름), URL 매칭보다 로그인 폼
-            # 가시성으로 판단하는 편이 더 견고하다는 keymedi.py의 교훈을 그대로 적용한다.
-            id_input = page.locator('input[name="memId"]')
-            try:
-                id_input.first.wait_for(state="visible", timeout=5000)
-                needs_login = True
-            except PlaywrightTimeoutError:
-                needs_login = False
-
-            if needs_login:
-                id_input.first.fill(creds["id"])
-                page.fill('input[name="passwd"]', creds["password"])
-                page.click('button.btn_login:has-text("로그인")')
-
-                # keymedi.py에서 확인된 경쟁 상태 방지: 클릭 직후 바로 상태를 확인하지
-                # 않고, 로그인 폼이 화면에서 사라질 때까지 명시적으로 기다린다.
-                try:
-                    id_input.first.wait_for(state="hidden", timeout=DEFAULT_TIMEOUT_MS)
-                except PlaywrightTimeoutError:
-                    result["message"] = "로그인 실패 — 아이디/비밀번호 또는 셀렉터 확인 필요."
-                    result["screenshot"] = save_failure_screenshot(page, account)
-                    browser.close()
-                    return result
-
+            # HMP는 미로그인 시 /login/loginForm.hm 로 리다이렉트되지만, URL 매칭보다
+            # 로그인 폼 가시성으로 판단하는 편이 견고하다(keymedi.py 교훈, common.form_login 참조).
+            login_result = common.form_login(
+                page,
+                'input[name="memId"]',
+                'input[name="passwd"]',
+                'button.btn_login:has-text("로그인")',
+                creds["id"],
+                creds["password"],
+                DEFAULT_TIMEOUT_MS,
+            )
+            if login_result is False:
+                result["message"] = "로그인 실패 — 아이디/비밀번호 또는 셀렉터 확인 필요."
+                result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
+                browser.close()
+                return result
+            if login_result is True:
                 page.wait_for_load_state("domcontentloaded")
                 # 로그인 후 attendance 페이지로 리다이렉트 안 되는 경우 대비
                 if "attendanceRouletteMain" not in page.url:
@@ -157,7 +223,7 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
 
             if not found:
                 result["message"] = "캡슐 버튼을 찾을 수 없음 — 페이지 구조 변경 가능성."
-                result["screenshot"] = save_failure_screenshot(page, account)
+                result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
                 browser.close()
                 return result
 
@@ -174,7 +240,7 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                 active_btn = active_by_text
             else:
                 result["message"] = "오늘의 캡슐 받기 버튼이 보이지 않음 — 페이지 구조 변경 가능성."
-                result["screenshot"] = save_failure_screenshot(page, account)
+                result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
                 browser.close()
                 return result
 
@@ -190,14 +256,20 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                     confirm_btn.first.click()
                 result["status"] = "success"
                 result["points"] = 10
-                result["message"] = "캡슐 출석 완료, 10캡슐 적립. (룰렛 자동화는 미구현 — 연속 10/20/30일 근접 시 수동 확인 필요)"
+                result["message"] = "캡슐 출석 완료, 10캡슐 적립."
             except PlaywrightTimeoutError:
                 result["message"] = "캡슐 버튼은 눌렀으나 완료 팝업을 확인하지 못함."
-                result["screenshot"] = save_failure_screenshot(page, account)
+                result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
+
+            # 룰렛 처리 (연속 10·20·30일 달성 시 버튼 활성화)
+            if result["status"] in ("success", "already_done"):
+                roulette_results = _run_roulette(page, account)
+                if roulette_results:
+                    result["roulette"] = roulette_results
 
         except Exception as e:
             result["message"] = f"예외 발생: {e}"
-            result["screenshot"] = save_failure_screenshot(page, account)
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
         finally:
             browser.close()
 
