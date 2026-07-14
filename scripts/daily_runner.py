@@ -27,9 +27,25 @@ from datetime import datetime
 SCRIPT_DIR = Path(__file__).resolve().parent
 VENV_PYTHON = SCRIPT_DIR.parent / "venv" / "bin" / "python3"
 
-# GitHub Actions에서는 secrets으로 주입, 로컬 실행 시 fallback
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8889509305:AAEryhx1NG4EafPqTp1qXfM0bhxTlWySwxY")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6951708663")
+# 환경변수 우선(GitHub Actions secrets), 없으면 credentials.json에서 로드
+# 코드에 토큰을 하드코딩하지 않는다.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+
+def load_telegram_credentials(credentials_path: str) -> None:
+    """credentials.json에서 텔레그램 토큰/chat_id를 전역변수에 로드한다."""
+    global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        return  # 환경변수로 이미 설정됨
+    try:
+        with open(credentials_path, "r", encoding="utf-8") as f:
+            creds = json.load(f)
+        tg = creds.get("telegram", {})
+        TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_TOKEN or tg.get("bot_token", "")
+        TELEGRAM_CHAT_ID = TELEGRAM_CHAT_ID or tg.get("chat_id", "")
+    except Exception as e:
+        print(f"[telegram] credentials.json 로드 실패: {e}", file=sys.stderr)
 
 
 def run_script(script_name: str, extra_args: list[str] = None) -> dict:
@@ -167,6 +183,8 @@ def main():
         help="credentials.json 경로",
     )
     args = parser.parse_args()
+
+    load_telegram_credentials(args.credentials)
 
     extra = []
     if args.headed:
