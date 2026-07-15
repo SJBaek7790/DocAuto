@@ -94,6 +94,21 @@ def format_status_emoji(status: str) -> str:
     return {"success": "✅", "already_done": "☑️", "skipped": "⏭️", "no_answer": "❓", "failed": "❌"}.get(status, "❓")
 
 
+def _short(text: str, limit: int = 200) -> str:
+    """Playwright 예외 등 긴 다중행 메시지를 텔레그램 표시용으로 축약(첫 줄만, limit자 제한).
+
+    hmp.py 룰렛 실패 시 넘어오는 Playwright call log(수천 자, 여러 줄)를 그대로
+    텔레그램에 넣으면 메시지 전체가 4096자 제한을 넘어 sendMessage가 400으로
+    거부된다(2026-07-15). 상세 원인은 Actions 로그/screenshot에 남으므로
+    텔레그램에는 요약만 보낸다.
+    """
+    text = (text or "").strip()
+    first_line = text.splitlines()[0] if text else text
+    if len(first_line) > limit:
+        first_line = first_line[:limit] + "…"
+    return first_line
+
+
 def format_doctorville_block(label: str, dv: dict) -> list[str]:
     """닥터빌 계정 하나의 결과를 텔레그램 라인 리스트로 변환한다.
 
@@ -120,7 +135,7 @@ def format_doctorville_block(label: str, dv: dict) -> list[str]:
         detail = product or count
         lines.append(f"  {task_label}: {e}{pts}{detail}")
         if s in ("failed", "no_answer") and t.get("message"):
-            lines.append(f"    └ {t['message']}")
+            lines.append(f"    └ {_short(t['message'])}")
     return lines
 
 
@@ -131,18 +146,22 @@ def format_flat_block(label: str, r: dict, unit: str = "P") -> list[str]:
     lines = [f"*{label}* {e}{pts}"]
     msg = r.get("message", "")
     if msg and r.get("status") not in ("success", "already_done"):
-        lines.append(f"  └ {msg}")
+        lines.append(f"  └ {_short(msg)}")
     # 룰렛 결과 (HMP 전용)
     for slot in r.get("roulette", []):
-        re = format_status_emoji(slot.get("status", "failed"))
+        re_e = format_status_emoji(slot.get("status", "failed"))
         rpts = f" +{slot['points']}캡슐" if slot.get("points") else ""
-        lines.append(f"  🎡 룰렛: {re}{rpts} {slot.get('message', '')}")
+        lines.append(f"  🎡 룰렛: {re_e}{rpts} {_short(slot.get('message', ''))}")
     # 댓글 결과 (HMP 전용)
     cmt = r.get("comment", {})
     if cmt:
         ce = format_status_emoji(cmt.get("status", "failed"))
-        cmt_msg = cmt.get("message", "")
-        lines.append(f"  💬 댓글: {ce} {cmt_msg}")
+        lines.append(f"  💬 댓글: {ce} {_short(cmt.get('message', ''))}")
+    # 글쓰기 결과 (HMP 전용)
+    post = r.get("post", {})
+    if post:
+        pe = format_status_emoji(post.get("status", "failed"))
+        lines.append(f"  ✏️ 글쓰기: {pe} {_short(post.get('message', ''))}")
     return lines
 
 
@@ -180,8 +199,21 @@ def format_telegram_message(results: dict, date_str: str) -> str:
     return "\n".join(lines)
 
 
+TELEGRAM_MAX_LEN = 4096
+
+
 def send_telegram(text: str) -> bool:
-    """텔레그램 Bot API로 메시지를 전송한다. 성공 시 True."""
+    """텔레그램 Bot API로 메시지를 전송한다. 성공 시 True.
+
+    Telegram sendMessage의 text는 4096자 제한이 있고 초과 시 400 Bad Request로
+    거부된다(2026-07-15 실제 발생 — hmp.py 룰렛 실패 시 Playwright의 상세
+    call log가 그대로 메시지에 섞여 제한을 넘김). format 단계에서 _short()로
+    각 메시지를 축약하지만, 예상 못한 이유로 다시 길어질 경우를 대비해 여기서도
+    안전망으로 한 번 더 자른다.
+    """
+    if len(text) > TELEGRAM_MAX_LEN:
+        text = text[: TELEGRAM_MAX_LEN - 20] + "\n…(생략, Actions 로그 참조)"
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = json.dumps({
         "chat_id": TELEGRAM_CHAT_ID,
@@ -197,6 +229,10 @@ def send_telegram(text: str) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return resp.status == 200
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"[telegram] 전송 실패: HTTP {e.code} {body}", file=sys.stderr)
+        return False
     except urllib.error.URLError as e:
         print(f"[telegram] 전송 실패: {e}", file=sys.stderr)
         return False
@@ -269,8 +305,11 @@ def main():
                 if r.get(sub, {}).get("status") == "failed":
                     failed = True
                     break
-            # HMP 댓글 중첩 구조
+            # HMP 댓글/글쓰기 중첩 구조
             if r.get("comment", {}).get("status") == "failed":
+                failed = True
+                break
+            if r.get("post", {}).get("status") == "failed":
                 failed = True
                 break
 

@@ -84,11 +84,16 @@ def _run_roulette(page, account: str) -> list[dict]:
 
     참여 가능한 "룰렛 참여하기" 버튼(visible)을 모두 찾아 순서대로 처리한다.
 
-    확인된 흐름 (2026-07-14):
-      1. "룰렛 참여하기" 버튼 클릭 → 룰렛 휠이 페이지에 표시됨
-      2. #startAbled 버튼 클릭 → POST /ajax/event/rouelettePercentage.hm 호출
-      3. 결과 팝업 표시 (이미지 alt = "[마일리지] X 캡슐 적립 완료" 또는 상품권 텍스트)
-      4. "확인" 버튼 클릭으로 닫기
+    확인된 흐름 (2026-07-14, 2026-07-15 보정):
+      1. "룰렛 참여하기" 버튼 클릭
+      1b. (뜰 때도/안 뜰 때도 있음) 참여 여부 확인 팝업(.pop.cont, onclick=
+          "roueletteAttendYnPopup(N)") → "확인"/"예" 클릭으로 닫기.
+          2026-07-15: 이 팝업을 처리하지 않아 #startAbled가 안 뜨고(1차 시도 실패),
+          팝업이 안 닫힌 채 남아 재시도 때 버튼을 가려 클릭이 막히는 연쇄 실패 발생.
+      2. 룰렛 휠이 페이지에 표시됨
+      3. #startAbled 버튼 클릭 → POST /ajax/event/rouelettePercentage.hm 호출
+      4. 결과 팝업 표시 (이미지 alt = "[마일리지] X 캡슐 적립 완료" 또는 상품권 텍스트)
+      5. "확인" 버튼 클릭으로 닫기
 
     결과 구조:
       [{"status": "success"|"failed", "points": int, "message": str}, ...]
@@ -107,7 +112,20 @@ def _run_roulette(page, account: str) -> list[dict]:
 
         try:
             avail[0].click()
-            page.wait_for_timeout(1500)  # 룰렛 휠 표시 대기
+            page.wait_for_timeout(1000)
+
+            # "룰렛 참여하기" 클릭 시 곧장 휠이 뜨는 게 아니라 참여 여부를 묻는
+            # 확인 팝업(.pop.cont, onclick="roueletteAttendYnPopup(N)")이 먼저 뜨는
+            # 경우가 있다(2026-07-15 확인). 안 닫으면 다음 재시도 때 이 팝업이
+            # 버튼을 가려 클릭이 계속 막힌다 — 있으면 확인/예 버튼을 눌러 닫는다.
+            for i in range(page.locator('.pop.cont').count()):
+                cand = page.locator('.pop.cont').nth(i)
+                if cand.is_visible():
+                    confirm_btn = cand.get_by_text(re.compile("확인|예"))
+                    if confirm_btn.count() > 0:
+                        confirm_btn.first.click()
+                        page.wait_for_timeout(1000)
+                    break
 
             # START 버튼 클릭
             start_btn = page.locator('#startAbled')
@@ -282,6 +300,141 @@ def _run_comment(page, account: str) -> dict:
     return result
 
 
+def _run_post(page, account: str) -> dict:
+    """지식커뮤니티에 매일 글 1개 작성.
+
+    내용:
+      - Topic: 여행/취미 (TOPIC_13)
+      - 제목: 오늘도 화이팅
+      - 본문: {요일}요일이네요. 다들 화이팅하세요.  (요일은 실행 시점 자동 결정)
+      - 태그: 화이팅
+
+    흐름:
+      1. knowCommHome.hm → .btnWrite 클릭 → #writePopupDiv 팝업 대기
+      2. #_topicNm 클릭(드롭다운 열기) → input[name="topicGbn"][value="TOPIC_13"] 클릭
+      3. input#title 에 제목 입력
+      4. iframe#innoditor_0 body에 본문 HTML 설정 +
+         textarea#innoditorSource_0 값도 동기화 (ajaxForm 직렬화 대비)
+      5. input#tag 에 '화이팅' 입력 → Enter
+      6. .botSubmit button[onclick*="saveBoard"] 클릭
+      7. confirm 다이얼로그 수락 → 성공 alert "게시글이 작성 완료 됐습니다." 확인
+
+    셀렉터 확인 근거 (2026-07-15, Claude in Chrome MCP로 실제 로그인 세션에서 DOM 직접 조회):
+      - 글쓰기 버튼: button.btnWrite (onclick: $KnowCommHome.knowBoardWriteViewRender(0))
+      - 팝업: div#writePopupDiv (.__ nkPop popComm __nkRe)
+      - 토픽 드롭다운: div.__nkMulSel — input#_topicNm 클릭 시 ul.flt 표시
+        여행/취미 = input[name="topicGbn"][value="TOPIC_13"]
+      - 제목: input#title (placeholder "Q. 제목을 입력하세요.")
+      - 본문 에디터: iframe#innoditor_0 (contenteditable body) +
+        textarea#innoditorSource_0 (폼 직렬화용 소스 textarea)
+      - 태그: input#tag (placeholder "※태그 입력 시 #을 제외한 텍스트만 입력 ...")
+      - 등록 버튼: .botSubmit button[onclick*="saveBoard"] — prgSt="F" 최종 등록
+      - AJAX: POST /ajax/knowcomm/insertKnowCommBoard.hm
+      - 성공(rtn_code==100): alert "게시글이 작성 완료 됐습니다."
+      - 오류: alert "오류 발생 재 로그인후..." 또는 "해당 글 본인인증에 실패..."
+    """
+    from datetime import datetime
+
+    DAYS_KO = ["월", "화", "수", "목", "금", "토", "일"]
+    day = DAYS_KO[datetime.now().weekday()]
+    title = "오늘도 화이팅"
+    content_html = f"<p>{day}요일이네요. 다들 화이팅하세요.</p>"
+    content_text = f"{day}요일이네요. 다들 화이팅하세요."
+
+    result: dict = {"status": "failed", "message": ""}
+
+    try:
+        # 1. 커뮤니티 홈으로 이동
+        page.goto(COMM_HOME_URL, wait_until="load")
+        page.wait_for_timeout(2000)
+
+        # 2. 글쓰기 버튼 클릭 → 팝업 열기
+        write_btn = page.locator('button.btnWrite, a.btnWrite')
+        try:
+            write_btn.wait_for(state="visible", timeout=10000)
+        except PlaywrightTimeoutError:
+            result["message"] = "글쓰기 버튼을 찾을 수 없음 — 셀렉터 변경 가능성."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_post")
+            return result
+
+        write_btn.click()
+
+        popup = page.locator('#writePopupDiv')
+        try:
+            popup.wait_for(state="visible", timeout=10000)
+        except PlaywrightTimeoutError:
+            result["message"] = "글쓰기 팝업(#writePopupDiv)이 나타나지 않음."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_post")
+            return result
+        page.wait_for_timeout(1000)
+
+        # 3. 토픽 드롭다운 열기 → 여행/취미 선택
+        page.locator('#writePopupDiv #_topicNm').click()
+        page.wait_for_timeout(500)
+        page.locator('#writePopupDiv input[name="topicGbn"][value="TOPIC_13"]').click()
+        page.wait_for_timeout(300)
+
+        # 4. 제목 입력
+        page.locator('#writePopupDiv #title').fill(title)
+
+        # 5. 본문 입력 — iframe body에 HTML 직접 설정 + source textarea 동기화
+        try:
+            inner_frame = page.frame_locator('#writePopupDiv #innoditor_0')
+            inner_frame.locator('body').evaluate(
+                f"el => {{ el.innerHTML = {repr(content_html)}; "
+                f"el.dispatchEvent(new Event('input', {{bubbles: true}})); }}"
+            )
+        except Exception:
+            pass  # iframe 접근 실패 시 source textarea만으로 시도
+        # source textarea도 동기화 (ajaxForm 직렬화 시 이 값이 사용됨)
+        page.evaluate(
+            f"document.querySelector('#innoditorSource_0').value = {repr(content_html)}"
+        )
+
+        # 6. 태그 입력 → Enter
+        tag_input = page.locator('#writePopupDiv #tag')
+        tag_input.fill("화이팅")
+        tag_input.press("Enter")
+        page.wait_for_timeout(500)
+
+        # 7. 다이얼로그 핸들러 등록 (confirm + 결과 alert 순서대로 수락)
+        dialogs_seen: list[str] = []
+
+        def on_dialog(dialog):
+            dialogs_seen.append(dialog.message)
+            dialog.accept()
+
+        page.on("dialog", on_dialog)
+
+        # 8. 등록하기 클릭 → saveBoard() → confirm → AJAX → alert
+        page.locator('#writePopupDiv .botSubmit button[onclick*="saveBoard"]').click()
+
+        # 9. confirm(즉시) + AJAX + alert 대기
+        page.wait_for_timeout(8000)
+        page.remove_listener("dialog", on_dialog)
+
+        # 10. 결과 판정
+        if any("작성 완료" in d for d in dialogs_seen):
+            result["status"] = "success"
+            result["message"] = f"글 작성 완료: '{title}' ({day}요일)"
+        elif any(kw in d for d in dialogs_seen for kw in ("오류", "에러", "실패", "인증")):
+            err = next(d for d in dialogs_seen if any(kw in d for kw in ("오류", "에러", "실패", "인증")))
+            result["message"] = f"서버 오류: {err}"
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_post")
+        elif dialogs_seen:
+            result["message"] = f"결과 alert 미수신 (확인된 다이얼로그: {dialogs_seen})."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_post")
+        else:
+            result["message"] = "등록하기 클릭 후 다이얼로그 없음 — 입력값 검증 실패 또는 셀렉터 오류."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_post")
+
+    except Exception as e:
+        result["message"] = f"글쓰기 예외: {e}"
+        result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_post")
+
+    return result
+
+
 def run(account: str, credentials_path: Path, headless: bool) -> dict:
     creds = load_credentials(credentials_path, account)
     result = {"site": "hmp", "account": account, "status": "failed", "points": 0, "message": ""}
@@ -385,6 +538,9 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
 
             # 지식커뮤니티 댓글 작성 (캡슐 결과와 무관하게 항상 시도)
             result["comment"] = _run_comment(page, account)
+
+            # 지식커뮤니티 글쓰기 (하루 1회, already_done 체크 없음)
+            result["post"] = _run_post(page, account)
 
         except Exception as e:
             result["message"] = f"예외 발생: {e}"
