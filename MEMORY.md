@@ -28,8 +28,14 @@
 - CSS 셀렉터에 `text=` 혼용 시 파싱 오류 → locator 분리.
 - 완료 팝업 `#10rewardPopup`은 숫자 시작 ID → `[id="10rewardPopup"]` 속성 셀렉터.
 - 관찰: 페이지 진입만으로 자동 출석 처리되는 경우가 있어 스크립트 클릭→팝업 흐름이 될 때·안 될 때가 갈림. 팝업 감지 실패 시 페이지 상태 변화로 완료를 판정하는 대안 검토 여지.
+- **지식커뮤니티 댓글 자동화 추가 (2026-07-15):** `_run_comment()` — `knowCommHome.hm` 최상단 게시물 boardSeq 추출(onclick regex) → `knowCommBoardDetail.hm?boardSeq=XXXX` GET 이동 → `#cmtDiv .cmtName` 에 내 닉네임 있으면 already_done → `textarea[name="cmtCntnt"]`에 "감사합니다" → `form.cmtForm button[onclick*="saveCmt"]` 클릭 → confirm 수락 → 성공 alert "저장 완료". 내 닉네임은 `form.cmtForm span` 첫 번째 요소에서 동적으로 읽음.
+- **지식커뮤니티 글쓰기 자동화 추가 (2026-07-15):** `_run_post()` — `knowCommHome.hm` → `button.btnWrite` 클릭 → `#writePopupDiv` 팝업 대기 → `#_topicNm` 클릭(드롭다운 열기) → `input[name="topicGbn"][value="TOPIC_13"]`(여행/취미) → `#title` "오늘도 화이팅" → iframe `#innoditor_0` body + `#innoditorSource_0` textarea에 `{요일}요일이네요. 다들 화이팅하세요.` → `#tag` "화이팅" Enter → `.botSubmit button[onclick*="saveBoard"]` → confirm 수락 → 성공 alert "게시글이 작성 완료 됐습니다.". already_done 체크 없음(하루 1회 실행 전제). AJAX 엔드포인트: `POST /ajax/knowcomm/insertKnowCommBoard.hm`, rtn_code==100 성공.
+- **GitHub Actions headed 실행 (2026-07-15):** Ubuntu CI에는 물리 디스플레이가 없으므로 `xvfb-run -a` 를 통해 가상 프레임버퍼(Xvfb)를 띄운 뒤 `--headed` 로 Chromium을 실행. workflow에 `sudo apt-get install -y xvfb` 단계 추가, 실행 커맨드를 `xvfb-run -a python3 scripts/daily_runner.py --headed` 로 변경.
 
 공통 로그인/스크린샷/폼로그인 로직은 `scripts/common.py`로 추출(2026-07-14).
+
+### daily_runner.py
+- 텔레그램 전송 400 Bad Request(2026-07-15): 원인은 메시지 길이 초과, 파싱 오류가 아니었음. hmp.py 룰렛 실패 시 넘어오는 Playwright 예외(call log 포함, 건당 최대 ~2400자)를 축약 없이 그대로 넣어 메시지 전체가 Telegram sendMessage 4096자 제한을 넘김 → 400. `_short()`로 각 task 메시지를 첫 줄·200자로 축약 + `send_telegram()`에 4096자 안전망 추가, `HTTPError`는 응답 body까지 로그로 남기도록 수정(다음에 같은 종류 오류가 나도 원인이 로그에 바로 보이게).
 
 ---
 
@@ -62,6 +68,7 @@
 - 결과 판별: 팝업 내 이미지 alt = `[마일리지] X 캡슐 적립 완료` 또는 상품권 텍스트
 - 2026-07-14 실제 결과: 10일 연속 룰렛 → **100캡슐 당첨**
 - daily_runner.py 텔레그램 포맷: `🎡 룰렛: ✅ +100캡슐 100캡슐 당첨` 형태로 출력
+- **버그(2026-07-15): 참여 확인 팝업 미처리.** "룰렛 참여하기" 클릭(`onclick="roueletteAttendYnPopup(N)"`) 시 곧장 휠이 뜨는 게 아니라 참여 여부를 묻는 확인 팝업(`.pop.cont`, 예: `#popCont1`)이 먼저 뜨는 경우가 있었음. 이걸 처리 안 해서 1차 시도는 `#startAbled` 미표시로 실패하고, 안 닫힌 팝업이 2·3차 재시도 때 버튼을 가려 "intercepts pointer events" 클릭 실패가 연쇄됨. `_run_roulette()`에 "룰렛 참여하기" 클릭 직후 `.pop.cont` 중 visible한 것을 찾아 "확인"/"예" 클릭하는 단계 추가로 수정(운영망에서 미검증 — 다음 룰렛 활성화 시 Actions 결과로 확인 필요).
 
 ---
 

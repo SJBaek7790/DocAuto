@@ -24,6 +24,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           playwright install chromium --with-deps
+          sudo apt-get install -y xvfb
 
       - name: credentials.json 생성
         env:
@@ -34,7 +35,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python3 scripts/daily_runner.py
+        run: xvfb-run -a python3 scripts/daily_runner.py --headed
 
       - name: 스크린샷 로그 업로드
         if: always()

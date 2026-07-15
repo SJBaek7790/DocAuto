@@ -61,8 +61,10 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 | 닥터빌 | bjh7790, wonju | 세미나 신청 | — | `doctorville.py --task seminar` |
 | 키메디 | bjh7790 | 출석 | 100P | `keymedi.py` |
 | HMP | bjh7790 | 캡슐 출석 | 10캡슐 | `hmp.py` |
+| HMP | bjh7790 | 지식커뮤니티 댓글 | 지식내공 | `hmp.py` (내장) |
+| HMP | bjh7790 | 지식커뮤니티 글쓰기 | 지식내공 | `hmp.py` (내장) |
 
-**HMP 룰렛(연속 10·20·30일)은 미구현.** 연속 출석일수가 10의 배수에 근접하면 사용자가 수동으로 룰렛을 돌려야 한다. (활성화된 DOM을 확인한 뒤 스크립트에 추가 예정 — 배경은 `hmp.py` 상단 주석 참조.)
+**HMP 룰렛(연속 10·20·30일) 자동화는 `hmp.py`에 구현되어 있다(2026-07-14~).** 참여 시 뜨는 확인 팝업(`.pop.cont`) 처리를 포함한 흐름은 `hmp.py` 상단 주석과 `MEMORY.md` 참조.
 
 ---
 
@@ -186,6 +188,9 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 - 로그인: `input[name="memId"]`, `input[name="passwd"]`, `button.btn_login:has-text("로그인")`
 - 캡슐 버튼: 신 UI "오늘의 캡슐 받기" 텍스트 / 구 UI `#capsuleBtn`(미완료)·`#capsuleBtnComplete`(완료) — **가시성(is_visible)으로 판단**
 - 완료 팝업: `[id="10rewardPopup"]` 내부 "확인" (id가 숫자로 시작해 `[id="..."]` 속성 셀렉터 필요)
+- **댓글 (`_run_comment`):** `a[onclick*="goDetail"]` 첫 번째 → boardSeq 추출 → `knowCommBoardDetail.hm?boardSeq=XXXX` → `textarea[name="cmtCntnt"]` "감사합니다" → `form.cmtForm button[onclick*="saveCmt"]` → confirm 수락 → alert "저장 완료". already_done: `#cmtDiv .cmtName` 중 내 닉네임(`form.cmtForm span` 첫 번째) 존재 시.
+- **글쓰기 (`_run_post`):** `button.btnWrite` → `#writePopupDiv` → `#_topicNm` 클릭(드롭다운) → `input[name="topicGbn"][value="TOPIC_13"]`(여행/취미) → `#title` "오늘도 화이팅" → `iframe#innoditor_0` body + `#innoditorSource_0` textarea에 `{요일}요일이네요. 다들 화이팅하세요.` → `#tag` "화이팅" Enter → `.botSubmit button[onclick*="saveBoard"]` → confirm → alert "게시글이 작성 완료 됐습니다.". already_done 체크 없음.
+- **GitHub Actions headed 실행:** `xvfb-run -a python3 scripts/daily_runner.py --headed` (Xvfb 가상 디스플레이 필요, workflow에서 `sudo apt-get install -y xvfb` 선행)
 
 ---
 
