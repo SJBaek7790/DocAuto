@@ -137,6 +137,12 @@ def format_flat_block(label: str, r: dict, unit: str = "P") -> list[str]:
         re = format_status_emoji(slot.get("status", "failed"))
         rpts = f" +{slot['points']}캡슐" if slot.get("points") else ""
         lines.append(f"  🎡 룰렛: {re}{rpts} {slot.get('message', '')}")
+    # 댓글 결과 (HMP 전용)
+    cmt = r.get("comment", {})
+    if cmt:
+        ce = format_status_emoji(cmt.get("status", "failed"))
+        cmt_msg = cmt.get("message", "")
+        lines.append(f"  💬 댓글: {ce} {cmt_msg}")
     return lines
 
 
@@ -263,6 +269,10 @@ def main():
                 if r.get(sub, {}).get("status") == "failed":
                     failed = True
                     break
+            # HMP 댓글 중첩 구조
+            if r.get("comment", {}).get("status") == "failed":
+                failed = True
+                break
 
     sys.exit(1 if failed else 0)
 

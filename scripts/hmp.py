@@ -49,6 +49,7 @@ end-to-end 테스트하지 못했다 (샌드박스가 hmp.co.kr에 접근 불가
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -57,6 +58,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import common
 
 ATTENDANCE_URL = "https://www.hmp.co.kr/event/attendanceRouletteMain.hm"
+COMM_HOME_URL = "https://www.hmp.co.kr/new/knowcomm/knowCommHome.hm"
+COMM_DETAIL_URL = "https://www.hmp.co.kr/new/knowcomm/knowCommBoardDetail.hm"
 DEFAULT_TIMEOUT_MS = 15000
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -162,6 +165,123 @@ def _run_roulette(page, account: str) -> list[dict]:
     return results
 
 
+def _run_comment(page, account: str) -> dict:
+    """지식커뮤니티 최상단 게시물에 '감사합니다' 댓글 작성.
+
+    흐름:
+      1. knowCommHome.hm → 첫 번째 게시물 boardSeq 추출 (onclick 속성 파싱)
+      2. knowCommBoardDetail.hm?boardSeq=XXXX → 상세 페이지 이동 (GET, 서버가 session에 저장)
+      3. #cmtDiv .cmtName 에 내 닉네임이 이미 있으면 already_done 반환
+      4. textarea[name="cmtCntnt"]에 '감사합니다' 입력 → 등록하기 클릭
+      5. confirm 다이얼로그(지식내공 안내) 수락 → 저장 완료 alert 수신 → success 반환
+
+    셀렉터 확인 근거 (2026-07-15, Claude in Chrome MCP로 실제 로그인 세션에서 DOM 직접 조회):
+      - 목록 링크: a[onclick*="goDetail"] — onclick 값: $KnowCommHome.goDetail('XXXXXX')
+      - 상세 URL: GET /new/knowcomm/knowCommBoardDetail.hm?boardSeq=XXXX 접근 가능
+        (파라미터 없는 URL로 리다이렉트되지만 서버 세션에 boardSeq 저장됨)
+      - 댓글 textarea: textarea[name="cmtCntnt"], placeholder "답변을 입력해주세요."
+      - 등록 버튼: form.cmtForm button[onclick*="saveCmt"] (type=button)
+      - 등록하기 클릭 시 confirm → 수락 → AJAX POST /ajax/knowcomm/insertKnowCommComments.hm
+      - 성공(rtn_code=="100"): alert "저장 완료"
+      - 오류: alert "오류 발생.." 또는 "본인 인증 실패" → 페이지 reload
+      - 내 닉네임: form.cmtForm 안 첫 번째 SPAN 텍스트 (예: "두들")
+      - 기존 댓글 작성자: #cmtDiv .cmtName (JS로 동적 렌더링, 페이지 로드 후 ~2초 대기)
+    """
+    result: dict = {"status": "failed", "message": "", "board_seq": ""}
+
+    try:
+        # 1. 목록에서 최상단 게시물 boardSeq 추출
+        page.goto(COMM_HOME_URL, wait_until="load")
+        page.wait_for_timeout(2000)
+
+        first_link = page.locator('a[onclick*="goDetail"]').first
+        try:
+            first_link.wait_for(state="visible", timeout=10000)
+        except PlaywrightTimeoutError:
+            result["message"] = "게시물 목록을 찾을 수 없음 — 셀렉터 변경 가능성."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+            return result
+
+        onclick = first_link.get_attribute("onclick") or ""
+        m = re.search(r"goDetail\('(\d+)'\)", onclick)
+        if not m:
+            result["message"] = f"boardSeq 추출 실패 (onclick='{onclick}')."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+            return result
+
+        board_seq = m.group(1)
+        result["board_seq"] = board_seq
+
+        # 2. 상세 페이지로 이동 (GET 파라미터로 접근, 서버가 세션에 boardSeq 저장)
+        page.goto(f"{COMM_DETAIL_URL}?boardSeq={board_seq}", wait_until="load")
+        page.wait_for_timeout(2000)  # JS 렌더링 대기 (#cmtDiv 동적 주입)
+
+        # 3. 내 닉네임 추출 (cmtForm 첫 SPAN = 현재 로그인 사용자 표시명)
+        my_name = ""
+        try:
+            my_name = page.locator("form.cmtForm span").first.inner_text(timeout=3000).strip()
+        except PlaywrightTimeoutError:
+            pass
+
+        # 4. already_done 판정 — 이미 내 닉네임이 댓글 목록에 있으면 스킵
+        if my_name:
+            existing_names = page.locator("#cmtDiv .cmtName").all_inner_texts()
+            if my_name in existing_names:
+                result["status"] = "already_done"
+                result["message"] = f"이미 댓글 작성 완료 (게시물 {board_seq}, 닉네임 {my_name})."
+                return result
+
+        # 5. 댓글 입력창 확인
+        cmt_textarea = page.locator('textarea[name="cmtCntnt"]')
+        try:
+            cmt_textarea.wait_for(state="visible", timeout=10000)
+        except PlaywrightTimeoutError:
+            result["message"] = "댓글 입력창을 찾을 수 없음 — 페이지 구조 변경 가능성."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+            return result
+
+        cmt_textarea.fill("감사합니다")
+
+        # 6. 다이얼로그 핸들러 등록 (confirm + 결과 alert 순서대로 수락)
+        dialogs_seen: list[str] = []
+
+        def on_dialog(dialog):
+            dialogs_seen.append(dialog.message)
+            dialog.accept()
+
+        page.on("dialog", on_dialog)
+
+        # 7. 등록하기 클릭 → saveCmt() → confirm → AJAX → alert
+        page.locator('form.cmtForm button[onclick*="saveCmt"]').click()
+
+        # 8. confirm(즉시) + AJAX + alert(수초 내) 대기
+        page.wait_for_timeout(8000)
+        page.remove_listener("dialog", on_dialog)
+
+        # 9. 결과 판정
+        if any("저장 완료" in d for d in dialogs_seen):
+            result["status"] = "success"
+            result["message"] = f"댓글 '감사합니다' 작성 완료 (게시물 {board_seq})."
+        elif any(kw in d for d in dialogs_seen for kw in ("오류", "에러", "실패")):
+            err = next(d for d in dialogs_seen if any(kw in d for kw in ("오류", "에러", "실패")))
+            result["message"] = f"서버 응답 오류: {err}"
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+        elif dialogs_seen:
+            # confirm은 떴으나 결과 alert 미수신 — AJAX 타임아웃 또는 응답 구조 변경
+            result["message"] = f"결과 alert 미수신 (확인된 다이얼로그: {dialogs_seen})."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+        else:
+            # 다이얼로그 자체가 안 뜸 — 입력값 검증 실패(빈 textarea 등) 또는 셀렉터 오류
+            result["message"] = "등록하기 클릭 후 다이얼로그 없음 — 입력값 검증 실패 가능성."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+
+    except Exception as e:
+        result["message"] = f"댓글 작성 예외: {e}"
+        result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+
+    return result
+
+
 def run(account: str, credentials_path: Path, headless: bool) -> dict:
     creds = load_credentials(credentials_path, account)
     result = {"site": "hmp", "account": account, "status": "failed", "points": 0, "message": ""}
@@ -224,48 +344,47 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
             if not found:
                 result["message"] = "캡슐 버튼을 찾을 수 없음 — 페이지 구조 변경 가능성."
                 result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
-                browser.close()
-                return result
-
-            if complete_btn.count() > 0 and complete_btn.first.is_visible():
+                # 캡슐 버튼 이상이어도 로그인 세션은 살아있으므로 댓글 시도는 계속한다
+            elif complete_btn.count() > 0 and complete_btn.first.is_visible():
                 result["status"] = "already_done"
                 result["message"] = "오늘 이미 캡슐 출석 완료된 상태."
-                browser.close()
-                return result
-
-            # ID 버튼이 보이면 우선 사용, 아니면 텍스트 버튼 사용
-            if active_by_id.count() > 0 and active_by_id.first.is_visible():
-                active_btn = active_by_id
-            elif active_by_text.count() > 0 and active_by_text.first.is_visible():
-                active_btn = active_by_text
             else:
-                result["message"] = "오늘의 캡슐 받기 버튼이 보이지 않음 — 페이지 구조 변경 가능성."
-                result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
-                browser.close()
-                return result
+                # ID 버튼이 보이면 우선 사용, 아니면 텍스트 버튼 사용
+                if active_by_id.count() > 0 and active_by_id.first.is_visible():
+                    active_btn = active_by_id
+                elif active_by_text.count() > 0 and active_by_text.first.is_visible():
+                    active_btn = active_by_text
+                else:
+                    result["message"] = "오늘의 캡슐 받기 버튼이 보이지 않음 — 페이지 구조 변경 가능성."
+                    result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
+                    active_btn = None
 
-            active_btn.first.click()
+                if active_btn is not None:
+                    active_btn.first.click()
 
-            # 완료 팝업 확인 — id="10rewardPopup" 은 숫자로 시작해 CSS 셀렉터로 쓸 수 없다.
-            # [id="..."] 속성 셀렉터로 우회한다.
-            try:
-                popup = page.locator('[id="10rewardPopup"]')
-                popup.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
-                confirm_btn = popup.locator('button:has-text("확인")')
-                if confirm_btn.count() > 0:
-                    confirm_btn.first.click()
-                result["status"] = "success"
-                result["points"] = 10
-                result["message"] = "캡슐 출석 완료, 10캡슐 적립."
-            except PlaywrightTimeoutError:
-                result["message"] = "캡슐 버튼은 눌렀으나 완료 팝업을 확인하지 못함."
-                result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
+                    # 완료 팝업 확인 — id="10rewardPopup" 은 숫자로 시작해 CSS 셀렉터로 쓸 수 없다.
+                    # [id="..."] 속성 셀렉터로 우회한다.
+                    try:
+                        popup = page.locator('[id="10rewardPopup"]')
+                        popup.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
+                        confirm_btn = popup.locator('button:has-text("확인")')
+                        if confirm_btn.count() > 0:
+                            confirm_btn.first.click()
+                        result["status"] = "success"
+                        result["points"] = 10
+                        result["message"] = "캡슐 출석 완료, 10캡슐 적립."
+                    except PlaywrightTimeoutError:
+                        result["message"] = "캡슐 버튼은 눌렀으나 완료 팝업을 확인하지 못함."
+                        result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
 
             # 룰렛 처리 (연속 10·20·30일 달성 시 버튼 활성화)
             if result["status"] in ("success", "already_done"):
                 roulette_results = _run_roulette(page, account)
                 if roulette_results:
                     result["roulette"] = roulette_results
+
+            # 지식커뮤니티 댓글 작성 (캡슐 결과와 무관하게 항상 시도)
+            result["comment"] = _run_comment(page, account)
 
         except Exception as e:
             result["message"] = f"예외 발생: {e}"
