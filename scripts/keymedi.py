@@ -124,8 +124,21 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
             # 달력이 세로로 길어 오늘 날짜 버튼이 초기 뷰포트 밖에 위치하는 경우
             # is_visible() → False → else 분기 → 이전 날짜 "출석완료" 를 already_done
             # 으로 오판하는 버그 재발. 버튼이 count > 0 이면 scroll 후 클릭한다.
+            #
+            # 재발 버그(2026-07-16, opus 자문으로 원인 확정): 바로 위 wait_for_selector가
+            # OR 셀렉터라서 과거 날짜의 "출석완료" 버튼만 먼저 DOM에 붙어도 즉시 리턴되고,
+            # 그 순간 attend_btn.count()를 바로 체크하면 오늘 "출석체크하기" 버튼이
+            # 아직 마운트되기 전이라 0으로 읽혀 already_done 오판으로 이어질 수 있다.
+            # 즉시 판단하지 않고 최대 3초(500ms x 6) 짧게 폴링해 안정화를 기다린다.
             attend_btn = page.locator('button:has-text("출석체크하기")')
-            if attend_btn.count() > 0:
+            found_attend = False
+            for _ in range(6):
+                if attend_btn.count() > 0:
+                    found_attend = True
+                    break
+                page.wait_for_timeout(500)
+
+            if found_attend:
                 try:
                     attend_btn.first.scroll_into_view_if_needed()
                     page.wait_for_timeout(500)
@@ -133,11 +146,14 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                     pass
                 attend_btn.first.click()
             else:
-                # 출석체크하기 버튼이 없으면 → 이미 완료 또는 페이지 구조 문제
+                # 출석체크하기 버튼이 없으면 → 이미 완료 또는 페이지 구조 문제.
+                # already_done 오판이 반복 재발한 이력이 있어(2026-07-12~16),
+                # 이 분기는 오판이어도 다음에 근거가 남도록 항상 스크린샷을 남긴다.
                 already_done = page.locator('button:has-text("출석완료")')
                 if already_done.count() > 0 and already_done.first.is_visible():
                     result["status"] = "already_done"
-                    result["message"] = "오늘 이미 출석체크 완료된 상태."
+                    result["message"] = "오늘 이미 출석체크 완료된 상태로 판단(출석체크하기 버튼 미발견)."
+                    result["screenshot"] = common.save_screenshot(page, f"keymedi_{account}_already_done")
                     browser.close()
                     return result
                 result["message"] = "출석체크하기 버튼을 찾을 수 없음 — 페이지 구조 변경 가능성."

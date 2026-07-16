@@ -204,6 +204,11 @@ def _run_comment(page, account: str) -> dict:
       - 오류: alert "오류 발생.." 또는 "본인 인증 실패" → 페이지 reload
       - 내 닉네임: form.cmtForm 안 첫 번째 SPAN 텍스트 (예: "두들")
       - 기존 댓글 작성자: #cmtDiv .cmtName (JS로 동적 렌더링, 페이지 로드 후 ~2초 대기)
+
+    버그 수정 (2026-07-16): 게시물에 기존 댓글이 있으면 그 댓글의 답글/수정 폼도
+    동일한 textarea[name="cmtCntnt"]를 가져 매칭이 2개 이상 되면서 strict mode
+    violation이 났다. 새 댓글 폼은 #cmtDiv 바깥의 form.cmtForm 중 값이 비어있는
+    것으로 스코프해서 찾는다(자세한 내용은 아래 구현 참조).
     """
     result: dict = {"status": "failed", "message": "", "board_seq": ""}
 
@@ -249,15 +254,57 @@ def _run_comment(page, account: str) -> dict:
                 result["message"] = f"이미 댓글 작성 완료 (게시물 {board_seq}, 닉네임 {my_name})."
                 return result
 
-        # 5. 댓글 입력창 확인
-        cmt_textarea = page.locator('textarea[name="cmtCntnt"]')
+        # 5. 댓글 입력창 열기
+        # 2026-07-16 실제 로컬 실행으로 재확인: 댓글 작성 폼(form.cmtForm)은 댓글이
+        # 0개인 게시물에서도 기본 상태에서는 접혀있다(textarea count=1이지만
+        # is_visible()=False) — "댓글" 토글 버튼을 눌러야 펼쳐진다. 처음 fix 때는
+        # 이걸 놓쳐서 "새 댓글 입력창을 찾을 수 없음"으로 계속 실패했음(디버그
+        # 스크립트로 실제 DOM 조회해 확인). 먼저 토글을 눌러 펼친다.
+        toggle_btn = page.locator('button:has-text("댓글")').first
         try:
-            cmt_textarea.wait_for(state="visible", timeout=10000)
+            toggle_btn.wait_for(state="visible", timeout=5000)
+            toggle_btn.click()
+            page.wait_for_timeout(800)
         except PlaywrightTimeoutError:
-            result["message"] = "댓글 입력창을 찾을 수 없음 — 페이지 구조 변경 가능성."
+            pass  # 토글 버튼이 없으면 이미 펼쳐진 상태일 수 있음 — 계속 진행
+
+        # 게시물에 기존 댓글이 있으면 그 댓글의 답글/수정용 폼도 동일하게
+        # textarea[name="cmtCntnt"]를 가져서(값이 기존 댓글 텍스트로 채워진 채)
+        # 매칭 개수가 2개 이상이 되고 strict mode violation이 났었다(opus 자문
+        # 반영). 새 댓글용 최상단 폼은 기존 댓글 목록 컨테이너(#cmtDiv) 바깥에
+        # 있으므로 그 조건으로 스코프하고, 혹시 몰라 값이 비어있는지도 재확인해
+        # 실수로 남의 댓글 수정 폼을 잡아 덮어쓰는 사고를 막는다.
+        main_form = None
+        all_forms = page.locator('form.cmtForm')
+        try:
+            all_forms.first.wait_for(state="attached", timeout=10000)
+        except PlaywrightTimeoutError:
+            result["message"] = "댓글 폼(form.cmtForm)을 찾을 수 없음 — 페이지 구조 변경 가능성."
             result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
             return result
 
+        for i in range(all_forms.count()):
+            f = all_forms.nth(i)
+            try:
+                in_cmt_div = f.evaluate("el => !!el.closest('#cmtDiv')")
+            except Exception:
+                in_cmt_div = False
+            if in_cmt_div:
+                continue  # 기존 댓글의 답글/수정 폼 — 새 댓글 폼이 아님
+            ta = f.locator('textarea[name="cmtCntnt"]')
+            if ta.count() == 0 or not ta.first.is_visible():
+                continue
+            if (ta.first.input_value() or "").strip():
+                continue  # 값이 이미 차 있으면 기존 댓글 수정 폼일 가능성 — 제외
+            main_form = f
+            break
+
+        if main_form is None:
+            result["message"] = "새 댓글 입력창을 찾을 수 없음 — 페이지 구조 변경 가능성."
+            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+            return result
+
+        cmt_textarea = main_form.locator('textarea[name="cmtCntnt"]').first
         cmt_textarea.fill("감사합니다")
 
         # 6. 다이얼로그 핸들러 등록 (confirm + 결과 alert 순서대로 수락)
@@ -270,7 +317,9 @@ def _run_comment(page, account: str) -> dict:
         page.on("dialog", on_dialog)
 
         # 7. 등록하기 클릭 → saveCmt() → confirm → AJAX → alert
-        page.locator('form.cmtForm button[onclick*="saveCmt"]').click()
+        # 텍스트를 채운 폼(main_form)과 동일한 폼의 버튼을 눌러야 한다 — 별도로
+        # form.cmtForm 전체에서 다시 찾으면 다른 폼(기존 댓글 폼)의 버튼을 누를 위험이 있다.
+        main_form.locator('button[onclick*="saveCmt"]').first.click()
 
         # 8. confirm(즉시) + AJAX + alert(수초 내) 대기
         page.wait_for_timeout(8000)
@@ -332,6 +381,12 @@ def _run_post(page, account: str) -> dict:
       - AJAX: POST /ajax/knowcomm/insertKnowCommBoard.hm
       - 성공(rtn_code==100): alert "게시글이 작성 완료 됐습니다."
       - 오류: alert "오류 발생 재 로그인후..." 또는 "해당 글 본인인증에 실패..."
+
+    버그 수정 (2026-07-16): input[name="topicGbn"][value="TOPIC_13"] 직접 클릭이
+    "element is not visible"로 타임아웃(실제 <input>이 커스텀 스타일링을 위해
+    시각적으로 숨겨져 있고 pill/label만 보이는 패턴으로 추정). 보이는 라벨
+    텍스트("여행/취미")를 우선 클릭하고, 못 찾으면 force 클릭 폴백 + 선택 여부를
+    is_checked()로 검증한다.
     """
     from datetime import datetime
 
@@ -369,10 +424,32 @@ def _run_post(page, account: str) -> dict:
         page.wait_for_timeout(1000)
 
         # 3. 토픽 드롭다운 열기 → 여행/취미 선택
+        # 2026-07-16 버그: input[name="topicGbn"][value="TOPIC_13"] 직접 클릭이
+        # "element is not visible"로 15초 타임아웃(스크린샷상 pill 자체는 멀쩡히
+        # 보임 — opus 자문 결과 오버레이/애니메이션 문제가 아니라 커스텀 스타일링을
+        # 위해 실제 <input>이 시각적으로 숨겨진 패턴으로 판단). 사용자가 실제로
+        # 클릭하는 보이는 라벨/pill 텍스트를 우선 클릭하고, 못 찾으면 force 클릭으로
+        # 폴백한다. 클릭 후 실제로 선택됐는지 checked 상태로 검증해 조용히 실패하는
+        # 것을 막는다.
         page.locator('#writePopupDiv #_topicNm').click()
         page.wait_for_timeout(500)
-        page.locator('#writePopupDiv input[name="topicGbn"][value="TOPIC_13"]').click()
+
+        topic_input = page.locator('#writePopupDiv input[name="topicGbn"][value="TOPIC_13"]')
+        topic_label = page.locator('#writePopupDiv label:has-text("여행/취미")')
+        if topic_label.count() > 0 and topic_label.first.is_visible():
+            topic_label.first.click()
+        else:
+            topic_input.click(force=True)
         page.wait_for_timeout(300)
+
+        try:
+            topic_checked = topic_input.is_checked()
+        except Exception:
+            topic_checked = None
+        if topic_checked is False:
+            # 라벨 클릭이 실제 input 선택으로 이어지지 않음 — force 클릭으로 재시도
+            topic_input.click(force=True)
+            page.wait_for_timeout(300)
 
         # 4. 제목 입력
         page.locator('#writePopupDiv #title').fill(title)

@@ -22,6 +22,8 @@
 ### keymedi.py
 - 첫 성공: 2026-07-06 (세 번째 시도). 수정 순서 = ① `externally-managed-environment` → venv ② 로그인 URL 매칭 오판 → 폼 가시성 체크 ③ 클릭 직후 경쟁 상태 오판 → 폼 hidden 대기.
 - already_done 오판(2026-07-12~14): 달력에 과거 "출석완료" 버튼이 여러 개 존재 → "출석체크하기"를 **먼저** 확인해야 함. 오늘 버튼이 뷰포트 밖이면 `is_visible()` False가 되므로 가시성 대신 count>0 + scroll 후 클릭.
+- **재발(2026-07-16, 4번째):** 위 수정에도 불구하고 미출석 상태에서 again already_done 오판 발생(사용자가 직접 확인). opus 자문 결과 root cause로 지목된 것: 바로 위 `wait_for_selector('button:has-text("출석체크하기"), button:has-text("출석완료")')`가 OR 매칭이라 과거 날짜 "출석완료" 버튼만 먼저 DOM에 붙어도 즉시 리턴되고, 그 순간 바로 `attend_btn.count()`를 체크하면 오늘 버튼이 아직 마운트 전이라 0으로 읽힐 수 있음. 수정: 즉시 판단하지 않고 최대 3초(500ms×6) 폴링 후 판단 + already_done 분기에 스크린샷 저장 추가(이전에는 이 분기가 스크린샷을 안 남겨서 오판이 나도 사후 검증이 불가능했음). **주의: 폴링은 타이밍 문제만 해결한다.** 만약 다음에 또 재발하면 셀렉터/텍스트 자체가 바뀌었을 가능성이 높으니, 이번엔 스크린샷이 남으므로 `logs/keymedi_*_already_done_*.png`로 확인할 것.
+  - **로컬 실행 검증(2026-07-16 저녁):** 실제로 실행해보니 이미 이날 아침 cron으로 출석이 완료된 상태라 already_done이 나왔고, 저장된 스크린샷으로 실제 "출석완료" 버튼 상태임을 육안 확인 — 이 결과 자체는 참(진짜 완료)이었다. **미출석 상태에서의 폴링 로직 자체는 이번엔 검증하지 못함** — 다음에 미출석 상태(자정 직후 등)에서 한 번 더 확인 필요.
 
 ### hmp.py
 - 셀렉터 리뉴얼(2026-07-07): 구 `#capsuleBtn`/`#capsuleBtnComplete` ID 사라짐 → "오늘의 캡슐 받기" 텍스트 + `wait_until="load"` + `wait_for_timeout(2000)` 병행. 구 ID는 fallback 유지.
@@ -31,11 +33,16 @@
 - **지식커뮤니티 댓글 자동화 추가 (2026-07-15):** `_run_comment()` — `knowCommHome.hm` 최상단 게시물 boardSeq 추출(onclick regex) → `knowCommBoardDetail.hm?boardSeq=XXXX` GET 이동 → `#cmtDiv .cmtName` 에 내 닉네임 있으면 already_done → `textarea[name="cmtCntnt"]`에 "감사합니다" → `form.cmtForm button[onclick*="saveCmt"]` 클릭 → confirm 수락 → 성공 alert "저장 완료". 내 닉네임은 `form.cmtForm span` 첫 번째 요소에서 동적으로 읽음.
 - **지식커뮤니티 글쓰기 자동화 추가 (2026-07-15):** `_run_post()` — `knowCommHome.hm` → `button.btnWrite` 클릭 → `#writePopupDiv` 팝업 대기 → `#_topicNm` 클릭(드롭다운 열기) → `input[name="topicGbn"][value="TOPIC_13"]`(여행/취미) → `#title` "오늘도 화이팅" → iframe `#innoditor_0` body + `#innoditorSource_0` textarea에 `{요일}요일이네요. 다들 화이팅하세요.` → `#tag` "화이팅" Enter → `.botSubmit button[onclick*="saveBoard"]` → confirm 수락 → 성공 alert "게시글이 작성 완료 됐습니다.". already_done 체크 없음(하루 1회 실행 전제). AJAX 엔드포인트: `POST /ajax/knowcomm/insertKnowCommBoard.hm`, rtn_code==100 성공.
 - **GitHub Actions headed 실행 (2026-07-15):** Ubuntu CI에는 물리 디스플레이가 없으므로 `xvfb-run -a` 를 통해 가상 프레임버퍼(Xvfb)를 띄운 뒤 `--headed` 로 Chromium을 실행. workflow에 `sudo apt-get install -y xvfb` 단계 추가, 실행 커맨드를 `xvfb-run -a python3 scripts/daily_runner.py --headed` 로 변경.
+- **댓글 strict mode violation (2026-07-16):** 게시물에 기존 댓글이 있으면 그 댓글의 답글/수정 폼도 `textarea[name="cmtCntnt"]`를 가져서(값이 기존 댓글 텍스트로 채워진 채) 매칭이 2개 이상 되어 예외 발생(`_run_comment`, 실제 로그: 3개 매칭 — 빈 것 2개 + "언제나 화이팅" 텍스트로 채워진 것 1개). `.first`만으로는 불충분(기존 댓글 수정 폼을 잘못 잡아 덮어쓸 위험, opus 자문 지적). 1차 수정: 새 댓글 폼을 `#cmtDiv`(기존 댓글 목록 컨테이너) 바깥 + textarea 값이 비어있는 `form.cmtForm`으로 스코프.
+  - **1차 수정만으로는 부족했음(로컬 실행으로 발견, 2026-07-16):** 댓글 0개인 게시물에서도 "새 댓글 입력창을 찾을 수 없음"으로 계속 실패. 디버그 스크립트로 실제 DOM 조회 결과, `form.cmtForm`은 정확히 1개 존재하지만 **기본 상태에서 `textarea[name="cmtCntnt"]`가 `is_visible()=False`** — "댓글" 토글 버튼을 눌러야 펼쳐짐. 이전 07-15 성공 사례는 어쩌다 이미 펼쳐진 상태였을 가능성. 2차 수정: 폼 스코핑 전에 `button:has-text("댓글")` 토글을 먼저 클릭해서 펼친 뒤 탐색. 로컬 실행으로 실제 댓글 작성 성공 확인 완료(게시물 2515921, "저장 완료").
+- **글쓰기 토픽 선택 실패 (2026-07-16):** `input[name="topicGbn"][value="TOPIC_13"]` 직접 클릭이 "element is not visible"로 15초 타임아웃(스크린샷상 "여행/취미" pill 자체는 렌더링되어 보임 — 커스텀 스타일링을 위해 실제 `<input>`이 시각적으로 숨겨진 패턴으로 추정, opus 자문). 수정: 보이는 라벨 텍스트(`label:has-text("여행/취미")`)를 우선 클릭, 못 찾으면 `force=True`로 폴백, 클릭 후 `is_checked()`로 실제 선택 여부 검증 후 필요시 재시도. **로컬 실행으로 실제 성공 확인 완료** ("글 작성 완료: '오늘도 화이팅' (목요일)").
 
 공통 로그인/스크린샷/폼로그인 로직은 `scripts/common.py`로 추출(2026-07-14).
 
 ### daily_runner.py
 - 텔레그램 전송 400 Bad Request(2026-07-15): 원인은 메시지 길이 초과, 파싱 오류가 아니었음. hmp.py 룰렛 실패 시 넘어오는 Playwright 예외(call log 포함, 건당 최대 ~2400자)를 축약 없이 그대로 넣어 메시지 전체가 Telegram sendMessage 4096자 제한을 넘김 → 400. `_short()`로 각 task 메시지를 첫 줄·200자로 축약 + `send_telegram()`에 4096자 안전망 추가, `HTTPError`는 응답 body까지 로그로 남기도록 수정(다음에 같은 종류 오류가 나도 원인이 로그에 바로 보이게).
+- **실행 순서 변경(2026-07-16):** 키메디 → 닥터빌(bjh7790) → 닥터빌(wonju) → HMP 순으로 변경(기존: 키메디 → HMP → 닥터빌×2). HMP를 맨 뒤로 미룸(사용자 요청).
+- **닥터빌 120초 타임아웃(2026-07-15~16 실제 발생):** 출석+퀴즈+세미나 3단계를 순차 실행하고 세미나는 신청 가능 건수만큼 반복 순회하는 구조라 기존 120초 제한을 두 계정 모두 초과해 "타임아웃 (120초)" failed로 강제 종료됨. `run_script()`에 `timeout` 파라미터를 추가하고 닥터빌 호출만 240초로 늘림(키메디/HMP는 기존 120초 유지). 참고: 실패 시점 스크린샷(`doctorville_quiz_layer_open_*.png`)은 퀴즈 레이어가 정상적으로 열린 직후 항상 찍히는 디버그샷이라 그 자체가 실패 지점을 가리키진 않음 — 타임아웃은 스크립트 전체 소요 시간 문제였을 가능성이 높음(세미나 신청 가능 건수가 많은 날 특히 취약, 다음에도 재발하면 세미나 루프 자체의 소요 시간을 로그로 남길 것).
 
 ---
 

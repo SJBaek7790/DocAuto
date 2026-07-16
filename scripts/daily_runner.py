@@ -2,11 +2,11 @@
 """
 일일 자동화 통합 실행 스크립트.
 
-실행 순서:
+실행 순서 (2026-07-16 변경 — HMP를 마지막으로):
   1. 키메디 출석 (bjh7790)
-  2. HMP 캡슐 출석 (bjh7790)
-  3. 닥터빌 출석+퀴즈+세미나 (bjh7790)
-  4. 닥터빌 출석+퀴즈+세미나 (wonju)
+  2. 닥터빌 출석+퀴즈+세미나 (bjh7790)
+  3. 닥터빌 출석+퀴즈+세미나 (wonju)
+  4. HMP 캡슐 출석 (bjh7790)
   5. 결과를 텔레그램 bot으로 전송
 
 로컬(venv)·GitHub Actions(전역 pip) 양쪽에서 동일하게 동작한다.
@@ -55,7 +55,7 @@ def load_telegram_credentials(credentials_path: str) -> None:
         print(f"[telegram] credentials.json 로드 실패: {e}", file=sys.stderr)
 
 
-def run_script(script_name: str, extra_args: list[str] = None) -> dict:
+def run_script(script_name: str, extra_args: list[str] = None, timeout: int = 120) -> dict:
     """서브프로세스로 스크립트를 실행하고 stdout JSON을 파싱해 반환한다."""
     script_path = SCRIPT_DIR / script_name
     cmd = [PYTHON, str(script_path)] + (extra_args or [])
@@ -64,7 +64,7 @@ def run_script(script_name: str, extra_args: list[str] = None) -> dict:
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
         )
         stdout = proc.stdout.strip()
         # JSON 한 줄 (또는 마지막 JSON 블록) 추출
@@ -85,7 +85,7 @@ def run_script(script_name: str, extra_args: list[str] = None) -> dict:
                 "stderr": proc.stderr[:200],
             }
     except subprocess.TimeoutExpired:
-        return {"status": "failed", "message": f"{script_name} 타임아웃 (120초)."}
+        return {"status": "failed", "message": f"{script_name} 타임아웃 ({timeout}초)."}
     except Exception as e:
         return {"status": "failed", "message": f"실행 예외: {e}"}
 
@@ -264,21 +264,24 @@ def main():
     results["keymedi"] = run_script("keymedi.py", extra)
     print(json.dumps(results["keymedi"], ensure_ascii=False))
 
-    print("[2/4] HMP 캡슐 출석...")
-    results["hmp"] = run_script("hmp.py", extra)
-    print(json.dumps(results["hmp"], ensure_ascii=False))
-
-    print("[3/4] 닥터빌 (bjh7790)...")
+    # 닥터빌은 출석+퀴즈+세미나 3단계를 순차 실행하며, 신청 가능한 세미나 수에 따라
+    # 소요 시간이 크게 늘어난다. 2026-07-15~16 실제로 두 계정 모두 기존 120초
+    # 제한에 걸려 "타임아웃 (120초)" failed로 잘려나간 사례가 있어 240초로 늘린다.
+    print("[2/4] 닥터빌 (bjh7790)...")
     results["doctorville_bjh7790"] = run_script(
-        "doctorville.py", ["--account", "bjh7790"] + extra
+        "doctorville.py", ["--account", "bjh7790"] + extra, timeout=240
     )
     print(json.dumps(results["doctorville_bjh7790"], ensure_ascii=False, indent=2))
 
-    print("[4/4] 닥터빌 (wonju)...")
+    print("[3/4] 닥터빌 (wonju)...")
     results["doctorville_wonju"] = run_script(
-        "doctorville.py", ["--account", "wonju"] + extra
+        "doctorville.py", ["--account", "wonju"] + extra, timeout=240
     )
     print(json.dumps(results["doctorville_wonju"], ensure_ascii=False, indent=2))
+
+    print("[4/4] HMP 캡슐 출석...")
+    results["hmp"] = run_script("hmp.py", extra)
+    print(json.dumps(results["hmp"], ensure_ascii=False))
 
     # 최종 결과 JSON 출력
     print("\n=== 최종 결과 ===")
