@@ -290,11 +290,11 @@ def task_quiz(page, creds: dict) -> dict:
 
     result["product"] = product
 
-    # 정답 조회
-    answer_str = answers.get(product)
-    if not answer_str:
+    # 정답 조회 — 문제은행 형식: {문항텍스트: 정답텍스트}
+    product_bank = answers.get(product)
+    if not isinstance(product_bank, dict):
         result["status"] = "no_answer"
-        result["message"] = f"quiz_answers.json에 '{product}' 정답 없음 — 사용자에게 추가 요청 필요."
+        result["message"] = f"quiz_answers.json에 '{product}' 정답 없음(또는 구 형식) — 사용자에게 추가 요청 필요."
         return result
 
     # pId 조회
@@ -342,16 +342,62 @@ def task_quiz(page, creds: dict) -> dict:
     page.wait_for_timeout(1500)
     save_screenshot(page, "quiz_layer_open")
 
-    # 라디오 버튼 선택 — #quizLayerPop 내부에서만 탐색
-    # answer_str: "111" → Q1=1, Q2=1, Q3=1
-    for i, val in enumerate(answer_str, start=1):
-        name = f"an_{i}"
+    # 문항·보기 순서는 매일(어쩌면 매 방문마다) 달라질 수 있으므로
+    # 위치(index) 대신 문항 텍스트로 문제은행을 조회해 정답 보기를 찾는다.
+    question_areas = quiz_layer.locator(".question_area")
+    qcount = question_areas.count()
+    if qcount == 0:
+        result["message"] = "퀴즈 레이어에서 문항(.question_area)을 찾지 못함."
+        result["screenshot"] = save_screenshot(page, "quiz_questions")
+        return result
+
+    plan: list[tuple[str, str]] = []
+    missing: list[dict] = []
+
+    for i in range(qcount):
+        qa = question_areas.nth(i)
+        q_text = " ".join(qa.locator(".txt_question").inner_text().split())
+        answer_text = product_bank.get(q_text)
+
+        choice_lis = qa.locator(".question_choice li")
+        choice_count = choice_lis.count()
+        matched_value = None
+        if answer_text is not None:
+            answer_norm = " ".join(answer_text.split())
+            for c in range(choice_count):
+                li = choice_lis.nth(c)
+                label_text = " ".join(li.locator("label").inner_text().split())
+                if label_text == answer_norm:
+                    matched_value = li.locator('input[type="radio"]').get_attribute("value")
+                    break
+
+        if matched_value is None:
+            missing.append({
+                "question": q_text,
+                "choices": [" ".join(t.split()) for t in qa.locator(".question_choice label").all_inner_texts()],
+                "recorded_answer_not_matched": answer_text,
+            })
+        else:
+            plan.append((f"an_{i + 1}", matched_value))
+
+    if missing:
+        result["status"] = "no_answer"
+        result["message"] = (
+            f"'{product}' 퀴즈: {len(missing)}개 문항 정답 매칭 실패 — quiz_answers.json에 문항/보기 텍스트 그대로 추가 필요.\n"
+            + json.dumps(missing, ensure_ascii=False)
+        )
+        close_btn = quiz_layer.locator(".btn_cancel, .btn_close").first
+        if close_btn.is_visible():
+            close_btn.click()
+        return result
+
+    for name, val in plan:
         radio = quiz_layer.locator(f'input[name="{name}"][value="{val}"]').first
         try:
             radio.wait_for(state="attached", timeout=5000)
             radio.click()
         except PlaywrightTimeoutError:
-            result["message"] = f"Q{i} 라디오 버튼(name={name}, value={val}) 찾기 실패."
+            result["message"] = f"{name} 라디오 버튼(value={val}) 찾기 실패."
             result["screenshot"] = save_screenshot(page, "quiz_radio")
             return result
 
