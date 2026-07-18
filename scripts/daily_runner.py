@@ -149,6 +149,9 @@ def format_flat_block(label: str, r: dict, unit: str = "P") -> list[str]:
         lines.append(f"  └ {_short(msg)}")
     # 룰렛 결과 (HMP 전용)
     for slot in r.get("roulette", []):
+        # Skip expected "not eligible today" cases
+        if slot.get("status") == "failed" and slot.get("message") == "START 버튼이 표시되지 않음":
+            continue
         re_e = format_status_emoji(slot.get("status", "failed"))
         rpts = f" +{slot['points']}캡슐" if slot.get("points") else ""
         lines.append(f"  🎡 룰렛: {re_e}{rpts} {_short(slot.get('message', ''))}")

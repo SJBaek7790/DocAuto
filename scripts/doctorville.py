@@ -401,8 +401,13 @@ def task_quiz(page, creds: dict) -> dict:
         result["message"] = f"'{product}' 퀴즈 정답, 500P 적립."
     except PlaywrightTimeoutError:
         try:
-            page.wait_for_selector(":text('틀렸습니다')", timeout=3000)
-            result["message"] = f"'{product}' 퀴즈 오답 — quiz_answers.json 정답 확인 필요."
+            # 실제 오답 문구는 "N, M번 오답입니다." 형태 (2026-07-17 확인)
+            wrong_el = page.wait_for_selector(":text('오답입니다')", timeout=3000)
+            wrong_text = wrong_el.inner_text().strip() if wrong_el else ""
+            ok_btn = page.locator('button:has-text("확인")').last
+            if ok_btn.is_visible():
+                ok_btn.click()
+            result["message"] = f"'{product}' 퀴즈 오답 ({wrong_text}) — quiz_answers.json 정답 확인 필요."
         except PlaywrightTimeoutError:
             # #btn_quiz_banner에 ico_finish가 붙었으면 이미 처리된 것
             banner_class = page.locator("#btn_quiz_banner").get_attribute("class") or ""
