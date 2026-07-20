@@ -221,6 +221,30 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 
 ---
 
+## 라이브 세미나 수동 입장 (2026-07-20~)
+
+**daily 루틴과 무관한 수동 전용 기능.** `.github/workflows/seminar_live.yml`을 Actions 탭에서
+**Run workflow**로 직접 실행할 때만 동작하며, cron에는 포함되지 않는다.
+
+- 스크립트: `scripts/seminar_live.py`
+- 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아,
+  각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
+- 계정: `--account all|bjh7790|wonju` (기본 all = 두 계정 순회). wonju도 닥터빌 세미나 신청을 하므로 포함.
+- 결과는 `daily_runner.py`와 별개로 텔레그램에도 전송(`--no-telegram`으로 생략 가능).
+
+### DOM 근거 (2026-07-20, 로그인된 실제 세션에서 확인)
+- `/seminar/main` 목록의 입장 가능 마커: `span.ico_enter` (신청 가능 마커 `span.ico_apply`와 동일 구조/위치) →
+  `closest('a.list_detail').href`의 `seminarId` 추출.
+- 세미나 상세(`/seminar/seminarDetail?seminarId=X`)의 입장 버튼: `a.btn_bn.btn_enter`, 텍스트 "입장하기",
+  `onclick="playOnPopup(...)"` — 내부에서 `window.open()`을 호출해 새 창(팝업)으로 스트리밍 화면을 띄운다.
+  Playwright `page.expect_popup()`으로 캐치.
+- 목록에 있어도 방문 시점에 방송이 끝났거나 아직 시작 전이면 상세 페이지에 `a.btn_bn.btn_enter`가 없을 수 있음 →
+  `skipped` 처리 후 다음 세미나로 진행.
+- **실제 클릭까지는 검증하지 않음** — 탐색 단계에서 사용자 시청 이력에 영향 줄 수 있어 중단. 첫 실행은 반드시
+  `--headed`(로컬) 또는 Actions artifact 스크린샷으로 팝업 진입/종료가 정상인지 확인할 것.
+
+---
+
 ## 개인정보 동의 정책
 
 세미나 신청 시 "개인정보 활용 동의" 모달 → **항상 동의**(`button.btn_confirm`).

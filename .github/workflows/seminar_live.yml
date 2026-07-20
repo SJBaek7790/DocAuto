@@ -1,0 +1,62 @@
+name: 닥터빌 라이브 세미나 수동 입장
+
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "대상 계정"
+        type: choice
+        options:
+          - all
+          - bjh7790
+          - wonju
+        default: all
+      stay_seconds:
+        description: "세미나 팝업 체류 시간(초)"
+        type: string
+        default: "20"
+
+jobs:
+  seminar-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 의존성 설치
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+          sudo apt-get install -y xvfb
+
+      - name: credentials.json 생성
+        env:
+          CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
+        run: echo "$CREDENTIALS_JSON" > credentials.json
+
+      - name: 라이브 세미나 입장 실행
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: >
+          xvfb-run -a python3 scripts/seminar_live.py
+          --account ${{ inputs.account }}
+          --stay-seconds ${{ inputs.stay_seconds }}
+          --headed
+
+      - name: 스크린샷 로그 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seminar-live-logs-${{ github.run_number }}
+          path: scripts/logs/
+          if-no-files-found: ignore
+          retention-days: 7

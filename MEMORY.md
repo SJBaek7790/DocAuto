@@ -39,6 +39,27 @@
 
 공통 로그인/스크린샷/폼로그인 로직은 `scripts/common.py`로 추출(2026-07-14).
 
+### seminar_live.py (신규, 2026-07-20)
+- 요청: daily 루틴과 별개로, 수동(GitHub Actions workflow_dispatch)으로만 실행해 `/seminar/main`의
+  입장 가능한 라이브 세미나를 전부 순회하며 입장→20초 대기→창 닫기를 반복.
+- **DOM 확인 방법:** 로컬 sandbox에는 Playwright 브라우저 실행에 필요한 시스템 라이브러리를 sudo 없이
+  설치할 수 없어(BrowserType.launch 실패, `sudo playwright install-deps` 필요하나 권한 없음) Playwright로
+  직접 탐색 불가. 대신 Claude in Chrome MCP로 사용자의 실제 로그인 세션에 붙어 DOM을 조사함.
+- 확인된 구조:
+  - `/seminar/main`: 입장 가능 마커 `span.ico_enter`(신청 가능 마커 `span.ico_apply`와 동일 위치·구조) →
+    `closest('a.list_detail').href`에서 `seminarId` 추출. (조사 시점 실 데이터로 2건 확인: 5457, 5460)
+  - 세미나 상세: `a.btn_bn.btn_enter`, 텍스트 "입장하기", `onclick="playOnPopup(...)"`.
+    `playOnPopup`은 `window.open()`을 호출함(함수 소스 직접 검사는 페이지 내 쿠키/쿼리스트링 패턴으로
+    추정되어 도구가 차단 — `usesWindowOpen`/`argCount` 등 구조만 간접 확인). → Playwright
+    `page.expect_popup()`으로 새 Page를 캐치하는 구현이 타당하다고 판단.
+- **미검증 사항:** 실제로 "입장하기"를 클릭해 팝업이 뜨고 20초 후 닫히는 전 과정은 아직 실행해보지
+  않았음(탐색 중 실제 시청 이력이 남는 것을 피하려 중단). 첫 GitHub Actions 실행 시 반드시
+  `scripts/logs/` 스크린샷(`seminar_live_enter_fail_*` 등)과 텔레그램 결과로 정상 동작 여부를 확인할 것.
+  특히: (1) 팝업이 진짜 뜨는지, (2) `a.btn_bn.btn_enter`가 스트리밍 시간대에만 나타나는지, 신청만 하고
+  아직 시작 전/이미 종료된 세미나에도 다른 텍스트로 남는지, (3) headless로도 동작하는지(다른 스크립트들은
+  headless에서 문제가 있어 전부 `xvfb-run --headed`로 전환한 전례가 있음 — 이 스크립트도 동일하게
+  headed로 시작).
+
 ### daily_runner.py
 - 텔레그램 전송 400 Bad Request(2026-07-15): 원인은 메시지 길이 초과, 파싱 오류가 아니었음. hmp.py 룰렛 실패 시 넘어오는 Playwright 예외(call log 포함, 건당 최대 ~2400자)를 축약 없이 그대로 넣어 메시지 전체가 Telegram sendMessage 4096자 제한을 넘김 → 400. `_short()`로 각 task 메시지를 첫 줄·200자로 축약 + `send_telegram()`에 4096자 안전망 추가, `HTTPError`는 응답 body까지 로그로 남기도록 수정(다음에 같은 종류 오류가 나도 원인이 로그에 바로 보이게).
 - **실행 순서 변경(2026-07-16):** 키메디 → 닥터빌(bjh7790) → 닥터빌(wonju) → HMP 순으로 변경(기존: 키메디 → HMP → 닥터빌×2). HMP를 맨 뒤로 미룸(사용자 요청).
