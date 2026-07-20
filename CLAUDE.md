@@ -172,7 +172,7 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 - 제품이 없거나, 제품은 있으나 오늘 문항의 텍스트가 은행에 없거나, 기록된 정답 텍스트가 오늘 보기 중 어느 것과도 일치하지 않으면 → 시도 금지 + `no_answer` 반환. 이때 텔레그램 알림 메시지에 **오늘 실제 문항/보기 텍스트 전체가 JSON으로 포함**되므로, 그대로 복사해 `quiz_answers.json`에 정답만 채워 넣으면 된다.
 - O/X 문항도 동일 원칙: 저장값은 실제 보기 라벨 텍스트("O"/"X" 등 화면 표기 그대로).
 - pId·문항수는 매일 바뀌므로 "오늘의 퀴즈" 카드 → 제품 상세 경로로 동적 탐색
-- 탐색 경로: `/product/main` → 이달의 퀴즈 섹션 → 오늘 날짜 제품명 확인 → `/product/medicineList`에서 링크 추출 → 상세(`/product/productView?pId=XXX`)
+- **탐색 경로(2026-07-20 수정):** `/product/main` → 이달의 퀴즈 캘린더(`.quiz_calender`) → 오늘 날짜 다음 줄에서 제품명 추출 + 오늘 셀(`td.today`) 내 hidden input `.pIdCls`에서 pId 직접 추출 → 상세(`/product/productView?pId=XXX`). **`/product/medicineList`에서 이름으로 검색하던 이전 방식은 폐기.** medicineList는 의약품 전용 목록이라 모비케어 같은 의료기기(`/product/instrumentList` 카테고리)는 등록돼 있지 않아 pId 조회 실패 → 퀴즈 시도 자체가 안 됨(`failed: medicineList에서 pId를 찾지 못함`). 캘린더 셀의 `pIdCls`는 카테고리와 무관하게 항상 존재해 더 안정적. medicineList 검색은 폴백으로만 유지.
 - 퀴즈 레이어 DOM(`.question_area` 반복 구조, 2026-07-19 확인): 문항당 `<span class="questionN">QN</span><p class="txt_question">...</p><ul class="question_choice"><li><input name="an_N" value="V"><label>보기텍스트</label></li>...</ul>`, 실제 문항 수는 hidden input `#questionCnt`로도 확인 가능.
 
 ---

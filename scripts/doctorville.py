@@ -226,10 +226,16 @@ def task_attend(page, creds: dict) -> dict:
 # 태스크 ② 오늘의 퀴즈
 # ---------------------------------------------------------------------------
 
-def _get_today_quiz_product(page) -> str | None:
+def _get_today_quiz_product(page) -> tuple[str | None, str | None]:
     """
-    /product/main의 이달의 퀴즈 캘린더에서 오늘 날짜의 제품명을 추출한다.
-    반환: 제품명 문자열 or None
+    /product/main의 이달의 퀴즈 캘린더에서 오늘 날짜의 제품명과 pId를 추출한다.
+
+    pId는 캘린더 표에서 오늘 셀(`td.today`)에 내장된 hidden input(`.pIdCls`)
+    값을 직접 읽는다. 의약품(medicineList)뿐 아니라 의료기기(instrumentList)
+    등 카테고리와 무관하게 항상 존재하므로, 카테고리별 목록 페이지에서 이름으로
+    검색하는 것보다 안정적이다(2026-07-20, 모비케어=의료기기가 medicineList에
+    없어 pId 조회 실패했던 문제 확인 후 수정).
+    반환: (제품명, pId) — 각각 못 찾으면 None
     """
     page.goto(PRODUCT_MAIN_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(2000)  # SPA 로딩 대기
@@ -241,16 +247,24 @@ def _get_today_quiz_product(page) -> str | None:
         calendar.first.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
         text = calendar.first.inner_text()
     except PlaywrightTimeoutError:
-        return None
+        return None, None
 
     # 날짜 다음 줄이 제품명
+    product = None
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     for i, line in enumerate(lines):
         # "N년 N월 N일" 패턴 이후 줄이 제품명
         if re.search(r"\d+년\s*\d+월\s*\d+일", line):
             if i + 1 < len(lines):
-                return lines[i + 1]
-    return None
+                product = lines[i + 1]
+            break
+
+    pid = None
+    pid_input = page.locator("td.today input.pIdCls")
+    if pid_input.count() > 0:
+        pid = pid_input.first.get_attribute("value")
+
+    return product, pid
 
 
 def _get_product_pid(page, product_name: str) -> str | None:
@@ -280,8 +294,8 @@ def task_quiz(page, creds: dict) -> dict:
     result = {"status": "failed", "points": 0, "product": ""}
     answers = load_quiz_answers()
 
-    # 오늘 퀴즈 제품명 확인
-    product = _get_today_quiz_product(page)
+    # 오늘 퀴즈 제품명·pId 확인 (pId는 캘린더 셀에 내장 — 의약품/의료기기 공통)
+    product, pid = _get_today_quiz_product(page)
     if not product:
         result["status"] = "failed"
         result["message"] = "이달의 퀴즈 캘린더에서 오늘 제품명을 찾지 못함."
@@ -297,10 +311,11 @@ def task_quiz(page, creds: dict) -> dict:
         result["message"] = f"quiz_answers.json에 '{product}' 정답 없음(또는 구 형식) — 사용자에게 추가 요청 필요."
         return result
 
-    # pId 조회
-    pid = _get_product_pid(page, product)
+    # pId 조회 — 캘린더에서 못 찾았으면 medicineList 검색으로 폴백(의약품 한정)
     if not pid:
-        result["message"] = f"medicineList에서 '{product}' pId를 찾지 못함."
+        pid = _get_product_pid(page, product)
+    if not pid:
+        result["message"] = f"캘린더·medicineList 모두에서 '{product}' pId를 찾지 못함."
         result["screenshot"] = save_screenshot(page, "quiz_pid")
         return result
 
