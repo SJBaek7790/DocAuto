@@ -214,7 +214,7 @@ def _run_comment(page, account: str) -> dict:
 
     try:
         # 1. 목록에서 최상단 게시물 boardSeq 추출
-        page.goto(COMM_HOME_URL, wait_until="load")
+        common.goto_with_retry(page, COMM_HOME_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS)
         page.wait_for_timeout(2000)
 
         first_link = page.locator('a[onclick*="goDetail"]').first
@@ -236,7 +236,9 @@ def _run_comment(page, account: str) -> dict:
         result["board_seq"] = board_seq
 
         # 2. 상세 페이지로 이동 (GET 파라미터로 접근, 서버가 세션에 boardSeq 저장)
-        page.goto(f"{COMM_DETAIL_URL}?boardSeq={board_seq}", wait_until="load")
+        common.goto_with_retry(
+            page, f"{COMM_DETAIL_URL}?boardSeq={board_seq}", wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS
+        )
         page.wait_for_timeout(2000)  # JS 렌더링 대기 (#cmtDiv 동적 주입)
 
         # 3. 내 닉네임 추출 (cmtForm 첫 SPAN = 현재 로그인 사용자 표시명)
@@ -400,7 +402,7 @@ def _run_post(page, account: str) -> dict:
 
     try:
         # 1. 커뮤니티 홈으로 이동
-        page.goto(COMM_HOME_URL, wait_until="load")
+        common.goto_with_retry(page, COMM_HOME_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS)
         page.wait_for_timeout(2000)
 
         # 2. 글쓰기 버튼 클릭 → 팝업 열기
