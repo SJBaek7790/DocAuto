@@ -390,10 +390,11 @@ def _run_post(page, account: str) -> dict:
     텍스트("여행/취미")를 우선 클릭하고, 못 찾으면 force 클릭 폴백 + 선택 여부를
     is_checked()로 검증한다.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone, timedelta
 
     DAYS_KO = ["월", "화", "수", "목", "금", "토", "일"]
-    day = DAYS_KO[datetime.now().weekday()]
+    kst = timezone(timedelta(hours=9))
+    day = DAYS_KO[datetime.now(kst).weekday()]
     title = "오늘도 화이팅"
     content_html = f"<p>{day}요일이네요. 다들 화이팅하세요.</p>"
     content_text = f"{day}요일이네요. 다들 화이팅하세요."

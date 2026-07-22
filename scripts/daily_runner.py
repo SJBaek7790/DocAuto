@@ -26,7 +26,7 @@ import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 # 현재 실행 중인 인터프리터를 그대로 사용한다.
@@ -260,7 +260,8 @@ def main():
     if args.credentials:
         extra += ["--credentials", args.credentials]
 
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    kst = timezone(timedelta(hours=9))
+    date_str = datetime.now(kst).strftime("%Y-%m-%d")
     results = {}
 
     print("[1/4] 키메디 출석...")

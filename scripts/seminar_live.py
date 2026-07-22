@@ -53,7 +53,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -315,7 +315,8 @@ def main():
 
     if not args.no_telegram:
         daily_runner.load_telegram_credentials(str(credentials_path))
-        date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        kst = timezone(timedelta(hours=9))
+        date_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
         msg = format_telegram_message(results, date_str, args.stay_seconds)
         print("\n[telegram] 전송 중...")
         ok = daily_runner.send_telegram(msg)
