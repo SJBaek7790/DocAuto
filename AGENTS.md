@@ -18,7 +18,7 @@
 ## 실행 아키텍처
 
 ```
-GitHub Actions (매일 08:01 KST, cron)
+GitHub Actions (매일 21:01 KST, cron)
   └─ .github/workflows/daily.yml
        ├─ pip install -r requirements.txt + playwright install chromium
        ├─ secrets.CREDENTIALS_JSON → credentials.json 생성
@@ -106,7 +106,7 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 > 텔레그램 토큰/chat_id는 `CREDENTIALS_JSON` 안에도 있지만, 워크플로우는 별도 env로도 주입한다. `daily_runner.py`는 환경변수를 우선 사용하고 없으면 credentials.json에서 읽는다.
 
 ### 스케줄 / 수동 실행
-- cron: `1 23 * * *` (UTC 23:01 = KST 08:01)
+- cron: `1 12 * * *` (UTC 12:01 = KST 21:01)
 - 수동 실행: Actions 탭 → "일일 의료 포털 자동화" → **Run workflow**
 - 실패 시 `scripts/logs/`의 스크린샷이 artifact로 업로드됨(7일 보관).
 
@@ -172,8 +172,12 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 - 제품이 없거나, 제품은 있으나 오늘 문항의 텍스트가 은행에 없거나, 기록된 정답 텍스트가 오늘 보기 중 어느 것과도 일치하지 않으면 → 시도 금지 + `no_answer` 반환. 이때 텔레그램 알림 메시지에 **오늘 실제 문항/보기 텍스트 전체가 JSON으로 포함**되므로, 그대로 복사해 `quiz_answers.json`에 정답만 채워 넣으면 된다.
 - O/X 문항도 동일 원칙: 저장값은 실제 보기 라벨 텍스트("O"/"X" 등 화면 표기 그대로).
 - pId·문항수는 매일 바뀌므로 "오늘의 퀴즈" 카드 → 제품 상세 경로로 동적 탐색
-- 탐색 경로: `/product/main` → 이달의 퀴즈 섹션 → 오늘 날짜 제품명 확인 → `/product/medicineList`에서 링크 추출 → 상세(`/product/productView?pId=XXX`)
+- 탐색 경로(2026-07-20 수정): `/product/main` → 이달의 퀴즈 캘린더(`.quiz_calender`) → 오늘 날짜 다음 줄에서 제품명 추출 + 오늘 셀(`td.today`) 내 hidden input `.pIdCls`에서 pId 직접 추출 → 상세(`/product/productView?pId=XXX`).
 - 퀴즈 레이어 DOM(`.question_area` 반복 구조, 2026-07-19 확인): 문항당 `<span class="questionN">QN</span><p class="txt_question">...</p><ul class="question_choice"><li><input name="an_N" value="V"><label>보기텍스트</label></li>...</ul>`, 실제 문항 수는 hidden input `#questionCnt`로도 확인 가능.
+- **구형식 보기 번호 폴백 (`quiz_answers_legacy.json`, 2026-07-25~):** 문제은행(`quiz_answers.json`)에 없거나 매칭 실패 시 `quiz_answers_legacy.json` (`{ "제품명": ["1", "2", "3"] }`) 폴백을 사용하여 보기 번호 순서 기반 시도를 보완 수행.
+- **텔레그램 인박스 파싱 (`scripts/telegram_inbox.py`):** 텔레그램 봇 채팅으로 `에빅사 1 2 3` 또는 `[제품명] [정답1] [정답2] ...` 형식의 메시지를 전송하면 `telegram_inbox.py --fetch`가 메시지를 수신·파싱하여 `quiz_answers_legacy.json`에 정답을 등록함. 워크플로우 3단계(`--fetch` → git commit `chore: update legacy quiz answers from telegram inbox [skip ci]` → `--confirm-offset`)로 안전하게 처리됨.
+- **오답 삭제 (Bank Eviction):** 퀴즈 제출 후 오답("정답이 아닙니다" / "오답") 감지 시, 사용된 `quiz_answers.json` 문제은행 항목 또는 `quiz_answers_legacy.json` 구형식 정답 항목을 자동 삭제(eviction)하여 다음 실행 시 오답 재시도를 방지함.
+- **정답 자동 학습:** 퀴즈 제출 성공 시 화면에 표시된 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 저장하고 GitHub Actions 완료 시 자동 커밋(`chore: update quiz answers bank from run [skip ci]`).
 
 ---
 
@@ -218,6 +222,24 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 2. `a.btn_bn` 텍스트가 "신청하기"이면 클릭
 3. `button.btn_confirm` 출현 시 클릭 (개인정보 동의)
 4. `a.btn_bn` 텍스트가 "신청취소"로 바뀌면 완료
+
+---
+
+## 라이브 세미나 자동/수동 입장 (`seminar_live.py`, 2026-07-25 업데이트)
+
+- **스케줄:** `.github/workflows/seminar_live.yml`에 30분 간격 cron 설정.
+  - 점심 세미나: KST 10:00~13:30 (`0,30 1-4 * * *` UTC)
+  - 저녁 세미나: KST 16:00~18:30 (`0,30 7-9 * * *` UTC)
+  - Actions 탭 수동 실행(`workflow_dispatch`)도 지원.
+- 스크립트: `scripts/seminar_live.py`
+- 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아, 각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
+- 계정: `--account all|bjh7790|wonju` (기본 all = 두 계정 순회).
+- **상태 관리 (`scripts/state/seminar_entered.json`):**
+  - 당일 이미 입장한 세미나 ID 이력을 저장 (`{ "YYYY-MM-DD": { "bjh7790": [seminarId, ...], "wonju": [...] } }`).
+  - GitHub Actions `actions/cache`로 실행 간 이력을 보존하여 30분 간격 실행 시 중복 진입 방지.
+  - 필요 시 `--ignore-state` 옵션으로 상태 무시 실행 가능.
+- 결과는 텔레그램으로 전송(`--no-telegram`으로 생략 가능).
+
 
 ---
 

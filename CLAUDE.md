@@ -18,7 +18,7 @@
 ## 실행 아키텍처
 
 ```
-GitHub Actions (매일 08:01 KST, cron)
+GitHub Actions (매일 21:01 KST, cron)
   └─ .github/workflows/daily.yml
        ├─ pip install -r requirements.txt + playwright install chromium
        ├─ secrets.CREDENTIALS_JSON → credentials.json 생성
@@ -106,7 +106,7 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 > 텔레그램 토큰/chat_id는 `CREDENTIALS_JSON` 안에도 있지만, 워크플로우는 별도 env로도 주입한다. `daily_runner.py`는 환경변수를 우선 사용하고 없으면 credentials.json에서 읽는다.
 
 ### 스케줄 / 수동 실행
-- cron: `1 23 * * *` (UTC 23:01 = KST 08:01)
+- cron: `1 12 * * *` (UTC 12:01 = KST 21:01)
 - 수동 실행: Actions 탭 → "일일 의료 포털 자동화" → **Run workflow**
 - 실패 시 `scripts/logs/`의 스크린샷이 artifact로 업로드됨(7일 보관).
 
@@ -174,6 +174,10 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 - pId·문항수는 매일 바뀌므로 "오늘의 퀴즈" 카드 → 제품 상세 경로로 동적 탐색
 - **탐색 경로(2026-07-20 수정):** `/product/main` → 이달의 퀴즈 캘린더(`.quiz_calender`) → 오늘 날짜 다음 줄에서 제품명 추출 + 오늘 셀(`td.today`) 내 hidden input `.pIdCls`에서 pId 직접 추출 → 상세(`/product/productView?pId=XXX`). **`/product/medicineList`에서 이름으로 검색하던 이전 방식은 폐기.** medicineList는 의약품 전용 목록이라 모비케어 같은 의료기기(`/product/instrumentList` 카테고리)는 등록돼 있지 않아 pId 조회 실패 → 퀴즈 시도 자체가 안 됨(`failed: medicineList에서 pId를 찾지 못함`). 캘린더 셀의 `pIdCls`는 카테고리와 무관하게 항상 존재해 더 안정적. medicineList 검색은 폴백으로만 유지.
 - 퀴즈 레이어 DOM(`.question_area` 반복 구조, 2026-07-19 확인): 문항당 `<span class="questionN">QN</span><p class="txt_question">...</p><ul class="question_choice"><li><input name="an_N" value="V"><label>보기텍스트</label></li>...</ul>`, 실제 문항 수는 hidden input `#questionCnt`로도 확인 가능.
+- **구형식 보기 번호 폴백 (`quiz_answers_legacy.json`, 2026-07-25~):** 문제은행(`quiz_answers.json`)에 없거나 매칭 실패 시 `quiz_answers_legacy.json` (`{ "제품명": ["1", "2", "3"] }`) 폴백을 사용하여 보기 번호 순서 기반 시도를 보완 수행.
+- **텔레그램 인박스 파싱 (`scripts/telegram_inbox.py`):** 텔레그램 봇 채팅으로 `에빅사 1 2 3` 또는 `[제품명] [정답1] [정답2] ...` 형식의 메시지를 전송하면 `telegram_inbox.py --fetch`가 메시지를 수신·파싱하여 `quiz_answers_legacy.json`에 정답을 등록함. 워크플로우 3단계(`--fetch` → git commit `chore: update legacy quiz answers from telegram inbox [skip ci]` → `--confirm-offset`)로 안전하게 처리됨.
+- **오답 삭제 (Bank Eviction):** 퀴즈 제출 후 오답("정답이 아닙니다" / "오답") 감지 시, 사용된 `quiz_answers.json` 문제은행 항목 또는 `quiz_answers_legacy.json` 구형식 정답 항목을 자동 삭제(eviction)하여 다음 실행 시 오답 재시도를 방지함.
+- **정답 자동 학습:** 퀴즈 제출 성공 시 화면에 표시된 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 저장하고 GitHub Actions 완료 시 자동 커밋(`chore: update quiz answers bank from run [skip ci]`).
 
 ---
 
@@ -221,27 +225,25 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 
 ---
 
-## 라이브 세미나 수동 입장 (2026-07-20~)
+## 라이브 세미나 자동/수동 입장 (`seminar_live.py`, 2026-07-25 업데이트)
 
-**daily 루틴과 무관한 수동 전용 기능.** `.github/workflows/seminar_live.yml`을 Actions 탭에서
-**Run workflow**로 직접 실행할 때만 동작하며, cron에는 포함되지 않는다.
-
+- **스케줄:** `.github/workflows/seminar_live.yml`에 30분 간격 cron 설정.
+  - 점심 세미나: KST 10:00~13:30 (`0,30 1-4 * * *` UTC)
+  - 저녁 세미나: KST 16:00~18:30 (`0,30 7-9 * * *` UTC)
+  - Actions 탭 수동 실행(`workflow_dispatch`)도 지원.
 - 스크립트: `scripts/seminar_live.py`
-- 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아,
-  각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
-- 계정: `--account all|bjh7790|wonju` (기본 all = 두 계정 순회). wonju도 닥터빌 세미나 신청을 하므로 포함.
-- 결과는 `daily_runner.py`와 별개로 텔레그램에도 전송(`--no-telegram`으로 생략 가능).
+- 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아, 각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
+- 계정: `--account all|bjh7790|wonju` (기본 all = 두 계정 순회).
+- **상태 관리 (`scripts/state/seminar_entered.json`):**
+  - 당일 이미 입장한 세미나 ID 이력을 저장 (`{ "YYYY-MM-DD": { "bjh7790": [seminarId, ...], "wonju": [...] } }`).
+  - GitHub Actions `actions/cache`로 실행 간 이력을 보존하여 30분 간격 실행 시 중복 진입 방지.
+  - 필요 시 `--ignore-state` 옵션으로 상태 무시 실행 가능.
+- 결과는 텔레그램으로 전송(`--no-telegram`으로 생략 가능).
 
 ### DOM 근거 (2026-07-20, 로그인된 실제 세션에서 확인)
-- `/seminar/main` 목록의 입장 가능 마커: `span.ico_enter` (신청 가능 마커 `span.ico_apply`와 동일 구조/위치) →
-  `closest('a.list_detail').href`의 `seminarId` 추출.
-- 세미나 상세(`/seminar/seminarDetail?seminarId=X`)의 입장 버튼: `a.btn_bn.btn_enter`, 텍스트 "입장하기",
-  `onclick="playOnPopup(...)"` — 내부에서 `window.open()`을 호출해 새 창(팝업)으로 스트리밍 화면을 띄운다.
-  Playwright `page.expect_popup()`으로 캐치.
-- 목록에 있어도 방문 시점에 방송이 끝났거나 아직 시작 전이면 상세 페이지에 `a.btn_bn.btn_enter`가 없을 수 있음 →
-  `skipped` 처리 후 다음 세미나로 진행.
-- **실제 클릭까지는 검증하지 않음** — 탐색 단계에서 사용자 시청 이력에 영향 줄 수 있어 중단. 첫 실행은 반드시
-  `--headed`(로컬) 또는 Actions artifact 스크린샷으로 팝업 진입/종료가 정상인지 확인할 것.
+- `/seminar/main` 목록의 입장 가능 마커: `span.ico_enter` (신청 가능 마커 `span.ico_apply`와 동일 구조/위치) → `closest('a.list_detail').href`의 `seminarId` 추출.
+- 세미나 상세(`/seminar/seminarDetail?seminarId=X`)의 입장 버튼: `a.btn_bn.btn_enter`, 텍스트 "입장하기", `onclick="playOnPopup(...)"` — 내부에서 `window.open()`을 호출해 새 창(팝업)으로 스트리밍 화면을 띄운다. Playwright `page.expect_popup()`으로 캐치.
+- 목록에 있어도 방문 시점에 방송이 끝났거나 아직 시작 전이면 상세 페이지에 `a.btn_bn.btn_enter`가 없을 수 있음 → `skipped` 처리 후 다음 세미나로 진행.
 
 ---
 

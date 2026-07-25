@@ -68,6 +68,31 @@
 
 ---
 
+## 신규 기능 및 시스템 업데이트 (2026-07-25)
+
+### 1. 크론 스케줄 변경 및 세미나 30분 간격 실행
+- **일일 루틴 크론 변경:** 기존 08:01 KST (`1 23 * * *`) → **21:01 KST (`1 12 * * *`)** 시간대 변경 (`.github/workflows/daily.yml`).
+- **라이브 세미나 자동 크론:** `.github/workflows/seminar_live.yml`에 30분 간격 cron 추가.
+  - 점심 세미나: 10:00~13:30 KST (`0,30 1-4 * * *` UTC)
+  - 저녁 세미나: 16:00~18:30 KST (`0,30 7-9 * * *` UTC)
+  - Actions 탭 수동 실행(`workflow_dispatch`)도 유지.
+
+### 2. 라이브 세미나 상태 관리 (`scripts/state/seminar_entered.json`)
+- 날짜 및 계정별 입장한 세미나 ID 이력을 `scripts/state/seminar_entered.json`에 저장 (`{ "YYYY-MM-DD": { "bjh7790": [1234], "wonju": [5678] } }`).
+- GitHub Actions `actions/cache`로 런 간 상태를 유지하여 30분 간격 실행 시 이미 입장 처리된 세미나의 중복 진입 방지.
+- 필요 시 `--ignore-state` 파라미터로 이력을 무시하고 전체 시도 가능.
+
+### 3. 텔레그램 인박스 파서 (`scripts/telegram_inbox.py`)
+- 텔레그램 봇 채팅에서 `에빅사 1 2 3` 또는 `[제품명] [정답1] [정답2] ...` 메시지를 수신하여 `quiz_answers_legacy.json` (`{ "에빅사": ["1", "2", "3"] }`)에 자동으로 정답 저장.
+- 워크플로우 3단계 연동: `--fetch` 실행 → git diff 감지 시 auto commit (`chore: update legacy quiz answers from telegram inbox [skip ci]`) → `--confirm-offset`으로 offset 확정.
+
+### 4. 퀴즈 폴백, 오답 삭제(Eviction) 및 정답 자동 학습
+- **퀴즈 처리 순서:** `quiz_answers.json` (문제은행 텍스트 매칭) → `quiz_answers_legacy.json` (구형식 보기 번호 시퀀스 매칭) → `no_answer`.
+- **오답 삭제 (Bank Eviction):** 제출 결과 감지 시 오답("정답이 아닙니다" / "오답")인 경우, 해당 정답 항목을 `quiz_answers.json` 또는 `quiz_answers_legacy.json`에서 자동 삭제하여 다음 실행 시 동일 오답 제출을 방지.
+- **정답 자동 학습:** 제출 결과 성공 시 화면의 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 학습 및 커밋 (`chore: update quiz answers bank from run [skip ci]`).
+
+---
+
 ## 퀴즈 정답 참고
 
 정답은 `quiz_answers.json`이 소스 오브 트루스. 제품명은 상세페이지 표기와 정확히 일치해야 매칭된다.
