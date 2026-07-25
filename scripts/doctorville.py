@@ -35,6 +35,7 @@ mims 로그인 셀렉터 확인 방법 (첫 실행 전):
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -52,6 +53,7 @@ SEMINAR_MAIN_URL    = f"{DOCTORVILLE_BASE}/seminar/main"
 DEFAULT_TIMEOUT_MS  = 30000
 SCRIPT_DIR          = Path(__file__).resolve().parent
 QUIZ_ANSWERS_PATH   = SCRIPT_DIR.parent / "quiz_answers.json"
+LEGACY_ANSWERS_PATH = SCRIPT_DIR.parent / "quiz_answers_legacy.json"
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +74,43 @@ def load_credentials(path: Path, account: str) -> dict:
 
 
 def load_quiz_answers() -> dict:
+    if not QUIZ_ANSWERS_PATH.exists():
+        return {}
     with open(QUIZ_ANSWERS_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_quiz_answers_legacy() -> dict:
+    if not LEGACY_ANSWERS_PATH.exists():
+        return {}
+    with open(LEGACY_ANSWERS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _record_answers(product: str, pairs: list[tuple[str, str]]) -> None:
+    if not pairs:
+        return
+    data = load_quiz_answers()
+    prod_dict = data.setdefault(product, {})
+    for q_text, ans_text in pairs:
+        prod_dict[q_text] = ans_text
+    tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_file, QUIZ_ANSWERS_PATH)
+
+
+def _evict_answers(product: str, q_texts: list[str]) -> None:
+    if not q_texts or not QUIZ_ANSWERS_PATH.exists():
+        return
+    data = load_quiz_answers()
+    if product in data:
+        for q_text in q_texts:
+            data[product].pop(q_text, None)
+        tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, QUIZ_ANSWERS_PATH)
 
 
 def save_screenshot(page, tag: str) -> str:
@@ -348,13 +385,6 @@ def task_quiz(page, creds: dict) -> dict:
 
     result["product"] = product
 
-    # 정답 조회 — 문제은행 형식: {문항텍스트: 정답텍스트}
-    product_bank = answers.get(product)
-    if not isinstance(product_bank, dict):
-        result["status"] = "no_answer"
-        result["message"] = f"quiz_answers.json에 '{product}' 정답 없음(또는 구 형식) — 사용자에게 추가 요청 필요."
-        return result
-
     # pId 조회 — 캘린더에서 못 찾았으면 medicineList 검색으로 폴백(의약품 한정)
     if not pid:
         pid = _get_product_pid(page, product)
@@ -382,13 +412,11 @@ def task_quiz(page, creds: dict) -> dict:
         return result
 
     # 퀴즈 배너 클릭 → 레이어 열기
-    # 배너는 페이지 중간쯤 있으므로 스크롤 후 클릭
     quiz_banner.scroll_into_view_if_needed()
     page.wait_for_timeout(500)
     quiz_banner.click()
 
     # 퀴즈 레이어(#quizLayerPop) 열릴 때까지 대기
-    # 실제 DOM에서 확인된 ID (2026-07-10)
     quiz_layer = page.locator("#quizLayerPop")
     try:
         quiz_layer.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
@@ -397,12 +425,9 @@ def task_quiz(page, creds: dict) -> dict:
         result["screenshot"] = save_screenshot(page, "quiz_layer")
         return result
 
-    # 레이어 완전 렌더링 대기 후 상태 스크린샷
     page.wait_for_timeout(1500)
     save_screenshot(page, "quiz_layer_open")
 
-    # 문항·보기 순서는 매일(어쩌면 매 방문마다) 달라질 수 있으므로
-    # 위치(index) 대신 문항 텍스트로 문제은행을 조회해 정답 보기를 찾는다.
     question_areas = quiz_layer.locator(".question_area")
     qcount = question_areas.count()
     if qcount == 0:
@@ -410,36 +435,84 @@ def task_quiz(page, creds: dict) -> dict:
         result["screenshot"] = save_screenshot(page, "quiz_questions")
         return result
 
-    plan: list[tuple[str, str]] = []
-    missing: list[dict] = []
+    q_texts = []
+    choices_per_q = []
+    values_per_q = []
 
     for i in range(qcount):
         qa = question_areas.nth(i)
         q_text = " ".join(qa.locator(".txt_question").inner_text().split())
-        answer_text = product_bank.get(q_text)
+        q_texts.append(q_text)
 
         choice_lis = qa.locator(".question_choice li")
-        choice_count = choice_lis.count()
-        matched_value = None
+        c_count = choice_lis.count()
+        c_labels = []
+        c_vals = []
+        for c in range(c_count):
+            li = choice_lis.nth(c)
+            label_text = " ".join(li.locator("label").inner_text().split())
+            val = li.locator('input[type="radio"]').get_attribute("value")
+            c_labels.append(label_text)
+            c_vals.append(val)
+        choices_per_q.append(c_labels)
+        values_per_q.append(c_vals)
+
+    source = None
+    plan: list[tuple[str, str]] = []
+    selected_pairs: list[tuple[str, str]] = []
+    missing: list[dict] = []
+
+    # 1. Bank 매칭 시도
+    product_bank = answers.get(product) if isinstance(answers.get(product), dict) else {}
+    bank_plan = []
+    bank_pairs = []
+    bank_missing = []
+
+    for i in range(qcount):
+        q_text = q_texts[i]
+        answer_text = product_bank.get(q_text)
+        matched_val = None
+        matched_label = None
         if answer_text is not None:
             answer_norm = " ".join(answer_text.split())
-            for c in range(choice_count):
-                li = choice_lis.nth(c)
-                label_text = " ".join(li.locator("label").inner_text().split())
-                if label_text == answer_norm:
-                    matched_value = li.locator('input[type="radio"]').get_attribute("value")
+            for label, val in zip(choices_per_q[i], values_per_q[i]):
+                if label == answer_norm:
+                    matched_val = val
+                    matched_label = label
                     break
-
-        if matched_value is None:
-            missing.append({
+        if matched_val is None:
+            bank_missing.append({
                 "question": q_text,
-                "choices": [" ".join(t.split()) for t in qa.locator(".question_choice label").all_inner_texts()],
+                "choices": choices_per_q[i],
                 "recorded_answer_not_matched": answer_text,
             })
         else:
-            plan.append((f"an_{i + 1}", matched_value))
+            bank_plan.append((f"an_{i + 1}", matched_val))
+            bank_pairs.append((q_text, matched_label))
 
-    if missing:
+    if not bank_missing:
+        source = "bank"
+        plan = bank_plan
+        selected_pairs = bank_pairs
+    else:
+        # 2. Legacy 매칭 시도
+        legacy_answers = load_quiz_answers_legacy()
+        legacy_seq = legacy_answers.get(product)
+        legacy_indices = None
+        if isinstance(legacy_seq, str):
+            legacy_indices = legacy_to_choice_indices(legacy_seq, choices_per_q)
+
+        if legacy_indices is not None:
+            source = "legacy"
+            plan = []
+            selected_pairs = []
+            for i, idx in enumerate(legacy_indices):
+                plan.append((f"an_{i + 1}", values_per_q[i][idx]))
+                selected_pairs.append((q_texts[i], choices_per_q[i][idx]))
+        else:
+            missing = bank_missing
+
+    if missing or not source:
         result["status"] = "no_answer"
         result["message"] = (
             f"'{product}' 퀴즈: {len(missing)}개 문항 정답 매칭 실패 — quiz_answers.json에 문항/보기 텍스트 그대로 추가 필요.\n"
@@ -463,8 +536,6 @@ def task_quiz(page, creds: dict) -> dict:
     # "정답 도전" 버튼 클릭 — 레이어 내부 .btn_answer
     submit_btn = quiz_layer.locator(".btn_answer")
     if submit_btn.count() == 0 or not submit_btn.is_visible():
-        # btn_answer 없으면 퀴즈가 이미 완료된 상태인지 확인
-        # 케이스 1: "퀴즈 성공을 축하드립니다" 텍스트 (오늘 이미 제출 완료)
         if quiz_layer.locator(":text('축하드립니다')").count() > 0:
             result["status"] = "already_done"
             result["message"] = f"'{product}' 퀴즈 오늘 이미 완료 ('퀴즈 성공을 축하드립니다' 확인)."
@@ -472,7 +543,6 @@ def task_quiz(page, creds: dict) -> dict:
             if close_btn.is_visible():
                 close_btn.click()
             return result
-        # 케이스 2: 배너에 ico_finish
         close_btn = quiz_layer.locator(".btn_cancel, .btn_close").first
         if close_btn.is_visible():
             close_btn.click()
@@ -485,6 +555,7 @@ def task_quiz(page, creds: dict) -> dict:
         result["message"] = "'정답 도전' 버튼을 찾지 못함."
         result["screenshot"] = save_screenshot(page, "quiz_submit")
         return result
+
     try:
         submit_btn.scroll_into_view_if_needed()
         page.wait_for_timeout(300)
@@ -494,8 +565,7 @@ def task_quiz(page, creds: dict) -> dict:
         result["screenshot"] = save_screenshot(page, "quiz_submit")
         return result
 
-    # 결과 팝업 대기 — "정답입니다" 또는 "500 포인트" 텍스트 중 하나
-    # Playwright text= 셀렉터에 쉼표 사용 불가 — 각각 별도 대기
+    # 결과 팝업 대기 — "정답입니다" 또는 "오답입니다"
     try:
         page.wait_for_selector(":text('정답입니다')", timeout=DEFAULT_TIMEOUT_MS)
         ok_btn = page.locator('button:has-text("확인")').last
@@ -503,24 +573,46 @@ def task_quiz(page, creds: dict) -> dict:
             ok_btn.click()
         result["status"] = "success"
         result["points"] = 500
-        result["message"] = f"'{product}' 퀴즈 정답, 500P 적립."
+        result["source"] = source
+        if source == "legacy":
+            _record_answers(product, selected_pairs)
+            result["learned"] = len(selected_pairs)
+        else:
+            result["learned"] = 0
+        result["message"] = f"'{product}' 퀴즈 정답 ({source}), 500P 적립."
     except PlaywrightTimeoutError:
         try:
-            # 실제 오답 문구는 "N, M번 오답입니다." 형태 (2026-07-17 확인)
             wrong_el = page.wait_for_selector(":text('오답입니다')", timeout=3000)
             wrong_text = wrong_el.inner_text().strip() if wrong_el else ""
             ok_btn = page.locator('button:has-text("확인")').last
             if ok_btn.is_visible():
                 ok_btn.click()
-            result["message"] = f"'{product}' 퀴즈 오답 ({wrong_text}) — quiz_answers.json 정답 확인 필요."
+
+            wrong_nums = parse_wrong_numbers(wrong_text)
+            if wrong_nums and all(1 <= w <= qcount for w in wrong_nums):
+                correct_pairs = [selected_pairs[w - 1] for w in range(1, qcount + 1) if w not in wrong_nums]
+                _record_answers(product, correct_pairs)
+                if source == "bank":
+                    wrong_q_texts = [selected_pairs[w - 1][0] for w in wrong_nums]
+                    _evict_answers(product, wrong_q_texts)
+
+            result["status"] = "failed"
+            result["source"] = source
+            result["message"] = f"'{product}' 퀴즈 오답 ({wrong_text}, 출처: {source}) — quiz_answers.json 확인 필요."
         except PlaywrightTimeoutError:
-            # #btn_quiz_banner에 ico_finish가 붙었으면 이미 처리된 것
             banner_class = page.locator("#btn_quiz_banner").get_attribute("class") or ""
             if "ico_finish" in banner_class:
                 result["status"] = "success"
                 result["points"] = 500
-                result["message"] = f"'{product}' 퀴즈 완료 확인 (ico_finish)."
+                result["source"] = source
+                if source == "legacy":
+                    _record_answers(product, selected_pairs)
+                    result["learned"] = len(selected_pairs)
+                else:
+                    result["learned"] = 0
+                result["message"] = f"'{product}' 퀴즈 완료 확인 (ico_finish, 출처: {source})."
             else:
+                result["status"] = "failed"
                 result["message"] = "퀴즈 제출 후 결과 팝업을 확인하지 못함."
                 result["screenshot"] = save_screenshot(page, "quiz_result")
 
