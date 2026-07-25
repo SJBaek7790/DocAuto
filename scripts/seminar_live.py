@@ -71,6 +71,41 @@ def save_screenshot(page, tag: str) -> str:
     return common.save_screenshot(page, f"seminar_live_{tag}")
 
 
+def merge_state(state: dict, today_str: str, accounts: list[str] = None) -> dict:
+    if accounts is None:
+        accounts = ["bjh7790", "wonju"]
+    if not isinstance(state, dict) or state.get("date") != today_str:
+        return {
+            "date": today_str,
+            "accounts": {
+                acc: {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}}
+                for acc in accounts
+            }
+        }
+    acc_map = state.setdefault("accounts", {})
+    for acc in accounts:
+        if acc not in acc_map:
+            acc_map[acc] = {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}}
+    return state
+
+
+def should_notify(results: dict) -> bool:
+    if not isinstance(results, dict):
+        return True
+    if results.get("status") == "failed":
+        return True
+    for acc, r in results.items():
+        if not isinstance(r, dict):
+            continue
+        if r.get("error"):
+            return True
+        ls = r.get("live_seminar", {})
+        if ls.get("entered") or ls.get("failed") or ls.get("status") == "failed":
+            return True
+    return False
+
+
+
 # ---------------------------------------------------------------------------
 # 라이브 세미나 목록 추출
 # ---------------------------------------------------------------------------

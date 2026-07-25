@@ -80,6 +80,50 @@ def save_screenshot(page, tag: str) -> str:
     return common.save_screenshot(page, f"doctorville_{tag}")
 
 
+def legacy_to_choice_indices(seq: str, question_choices: list[list[str]]) -> list[int] | None:
+    if len(seq) != len(question_choices):
+        return None
+    indices = []
+    for char, choices in zip(seq, question_choices):
+        char_lower = char.lower()
+        if char.isdigit():
+            idx = int(char) - 1
+            if 0 <= idx < len(choices):
+                indices.append(idx)
+            else:
+                return None
+        elif char_lower == 'o':
+            matched = False
+            for idx, label in enumerate(choices):
+                if label.strip().upper() == 'O':
+                    indices.append(idx)
+                    matched = True
+                    break
+            if not matched:
+                return None
+        elif char_lower == 'x':
+            matched = False
+            for idx, label in enumerate(choices):
+                if label.strip().upper() == 'X':
+                    indices.append(idx)
+                    matched = True
+                    break
+            if not matched:
+                return None
+        else:
+            return None
+    return indices
+
+
+def parse_wrong_numbers(text: str) -> list[int]:
+    match = re.search(r'([\d\s,]+)\s*번\s*오답', text)
+    if not match:
+        return []
+    nums_str = match.group(1)
+    return [int(n.strip()) for n in re.findall(r'\d+', nums_str)]
+
+
+
 # ---------------------------------------------------------------------------
 # 로그인
 # ---------------------------------------------------------------------------
