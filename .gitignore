@@ -6,3 +6,5 @@ scripts/logs/
 *.pyc
 .DS_Store
 scripts/state/*.json
+*.tmp
+

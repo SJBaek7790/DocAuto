@@ -29,6 +29,11 @@ jobs:
           playwright install chromium --with-deps
           sudo apt-get install -y xvfb
 
+      - name: 단위 테스트 실행
+        run: |
+          pip install -r requirements-dev.txt
+          python3 -m pytest
+
       - name: credentials.json 생성
         env:
           CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
@@ -43,6 +48,8 @@ jobs:
         run: python3 scripts/telegram_inbox.py --fetch
 
       - name: quiz_answers_legacy.json 커밋 및 푸시
+        id: commit_inbox
+        continue-on-error: true
         run: |
           if [ -n "$(git status --porcelain quiz_answers_legacy.json)" ]; then
             git config user.name "github-actions[bot]"
@@ -54,11 +61,11 @@ jobs:
           fi
 
       - name: Telegram Inbox Offset 확정
-        if: steps.inbox.outputs.next_offset != ''
+        if: steps.inbox.outputs.next_offset != '' && steps.commit_inbox.outcome == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python3 scripts/telegram_inbox.py --confirm-offset ${{ steps.inbox.outputs.next_offset }}
+        run: python3 scripts/telegram_inbox.py --confirm-offset "${{ steps.inbox.outputs.next_offset }}"
 
       - name: 일일 자동화 실행
         env:
