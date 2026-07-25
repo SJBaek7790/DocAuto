@@ -2,7 +2,7 @@
 """
 닥터빌 라이브 세미나 자동 입장 스크립트.
 
-daily 루틴(daily_runner.py)과 무관한 **수동 실행 전용** 스크립트다.
+daily 루틴(daily_runner.py)과 무관한 **수동/자동 루틴** 스크립트다.
 /seminar/main에서 현재 "입장하기"가 가능한(=신청 완료 + 방송 중) 라이브 세미나를
 모두 찾아 각각 입장 → 팝업 창에서 --stay-seconds초 대기 → 팝업 닫기를 반복한다.
 
@@ -13,45 +13,17 @@ daily 루틴(daily_runner.py)과 무관한 **수동 실행 전용** 스크립트
     python3 seminar_live.py --headed                 # 브라우저 창 표시 (디버깅용)
     python3 seminar_live.py --no-telegram            # 텔레그램 전송 생략
     python3 seminar_live.py --credentials PATH       # credentials.json 경로 직접 지정
-
-표준출력에 계정별 결과를 포함한 JSON을 출력한다. 예:
-    {
-      "bjh7790": {
-        "site": "doctorville_live_seminar",
-        "account": "bjh7790",
-        "live_seminar": {
-          "status": "success",
-          "entered": [5457, 5460],
-          "skipped": [],
-          "failed": [],
-          "count": 2,
-          "message": "입장 2건 완료, 스킵 0건."
-        }
-      },
-      "wonju": { ... }
-    }
-
-status 값 (live_seminar):
-    success  — 목록에 있던 세미나를 전부 순회 완료 (개별 실패 없음, 0건이어도 success)
-    failed   — 로그인 실패 또는 1건 이상 입장 실패
-
-DOM 근거 (2026-07-20, 로그인된 실제 세션에서 Claude in Chrome로 확인):
-- /seminar/main 목록에서 입장 가능한 세미나 카드: span.ico_enter
-  (task_seminar의 신청 가능 마커 span.ico_apply와 동일한 위치·구조).
-  closest("a.list_detail").href 의 쿼리스트링에서 seminarId 추출.
-- 세미나 상세(/seminar/seminarDetail?seminarId=X) 페이지의 입장 버튼:
-  a.btn_bn.btn_enter, 텍스트 "입장하기", onclick="playOnPopup(...)".
-  playOnPopup 내부에서 window.open()을 호출해 새 창(팝업)으로 스트리밍 화면을 띄운다
-  → Playwright page.expect_popup()으로 새 Page 객체를 캐치할 수 있음(확인됨).
-- 목록에 있어도 실제 방문 시점엔 방송이 끝나 있거나(=버튼 사라짐) 아직 방송 전일 수
-  있음 → a.btn_bn.btn_enter가 안 보이면 skipped로 처리하고 다음 세미나로 진행한다.
-- 확인차 실제로 클릭해보지는 않았다(사용자 시청 이력에 영향 줄 수 있어 탐색 단계에서
-  중단). 첫 실행은 반드시 --headed로 눈으로 확인할 것.
+    python3 seminar_live.py --state-file PATH        # 상태 저장 경로 지정
+    python3 seminar_live.py --block {lunch,evening,manual,auto}
+    python3 seminar_live.py --ignore-state           # 상태 무시 재입장
+    python3 seminar_live.py --always-notify          # 변화가 없어도 텔레그램 전송
 """
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -89,7 +61,70 @@ def merge_state(state: dict, today_str: str, accounts: list[str] = None) -> dict
     return state
 
 
-def should_notify(results: dict) -> bool:
+def load_state(path: Path | str, today_str: str = None) -> dict:
+    if today_str is None:
+        kst = timezone(timedelta(hours=9))
+        today_str = datetime.now(kst).strftime("%Y-%m-%d")
+    filepath = Path(path)
+    if filepath.exists():
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    else:
+        data = {}
+    return merge_state(data, today_str)
+
+
+def save_state(state: dict, path: Path | str) -> None:
+    filepath = Path(path)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = tempfile.NamedTemporaryFile("w", dir=filepath.parent, delete=False, encoding="utf-8")
+    try:
+        json.dump(state, temp_file, ensure_ascii=False, indent=2)
+        temp_file.flush()
+        os.fsync(temp_file.fileno())
+        temp_file.close()
+        os.replace(temp_file.name, filepath)
+    except Exception:
+        if os.path.exists(temp_file.name):
+            try:
+                os.remove(temp_file.name)
+            except OSError:
+                pass
+        raise
+
+
+def update_entered_state(
+    state: dict, account: str, seminar_id: int | str, block_name: str, path: Path | str = None
+) -> None:
+    sid = int(seminar_id)
+    acc_map = state.setdefault("accounts", {})
+    acc_data = acc_map.setdefault(
+        account, {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}}
+    )
+    if sid not in acc_data["entered"]:
+        acc_data["entered"].append(sid)
+    blocks_map = acc_data.setdefault("blocks", {})
+    block_list = blocks_map.setdefault(block_name, [])
+    if sid not in block_list:
+        block_list.append(sid)
+    if path is not None:
+        save_state(state, path)
+
+
+def determine_block_name(block_arg: str) -> str:
+    if block_arg != "auto":
+        return block_arg
+    kst = timezone(timedelta(hours=9))
+    hour = datetime.now(kst).hour
+    return "lunch" if hour < 16 else "evening"
+
+
+def should_notify(results: dict, always_notify: bool = False) -> bool:
+    if always_notify:
+        return True
     if not isinstance(results, dict):
         return True
     if results.get("status") == "failed":
@@ -103,7 +138,6 @@ def should_notify(results: dict) -> bool:
         if ls.get("entered") or ls.get("failed") or ls.get("status") == "failed":
             return True
     return False
-
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +231,23 @@ def enter_and_wait(page, sid: str, stay_seconds: int) -> dict:
 # 계정 1개 처리
 # ---------------------------------------------------------------------------
 
-def task_live_seminar(page, stay_seconds: int) -> dict:
-    result: dict = {"status": "failed", "entered": [], "skipped": [], "failed": [], "count": 0}
+def task_live_seminar(
+    page,
+    stay_seconds: int,
+    account: str = "",
+    state: dict = None,
+    block_name: str = "manual",
+    state_file: Path | str = None,
+    ignore_state: bool = False,
+) -> dict:
+    result: dict = {
+        "status": "failed",
+        "entered": [],
+        "already_entered": [],
+        "skipped": [],
+        "failed": [],
+        "count": 0,
+    }
 
     seminar_ids = get_live_seminar_ids(page)
     if not seminar_ids:
@@ -206,35 +255,62 @@ def task_live_seminar(page, stay_seconds: int) -> dict:
         result["message"] = "입장 가능한 라이브 세미나 없음."
         return result
 
+    already_entered_set = set()
+    if state and account and not ignore_state:
+        acc_data = state.get("accounts", {}).get(account, {})
+        already_entered_set = set(acc_data.get("entered", []))
+
     entered: list[int] = []
+    already_entered: list[int] = []
     skipped: list[int] = []
     failed_list: list[dict] = []
 
     for sid in seminar_ids:
+        sid_int = int(sid)
+        if sid_int in already_entered_set:
+            already_entered.append(sid_int)
+            continue
+
         r = enter_and_wait(page, sid, stay_seconds)
         if r["status"] == "success":
-            entered.append(int(sid))
+            entered.append(sid_int)
+            if state and account and state_file:
+                update_entered_state(state, account, sid_int, block_name, state_file)
         elif r["status"] == "skipped":
-            skipped.append(int(sid))
+            skipped.append(sid_int)
         else:
-            failed_list.append({"seminarId": int(sid), "message": r.get("message", "")})
+            failed_list.append({"seminarId": sid_int, "message": r.get("message", "")})
 
     result["entered"] = entered
+    result["already_entered"] = already_entered
     result["skipped"] = skipped
     result["failed"] = failed_list
     result["count"] = len(entered)
 
     if failed_list:
         result["status"] = "failed"
-        result["message"] = f"입장 {len(entered)}건, 스킵 {len(skipped)}건, 실패 {len(failed_list)}건."
+        result["message"] = (
+            f"입장 {len(entered)}건, 이미입장 {len(already_entered)}건, 스킵 {len(skipped)}건, 실패 {len(failed_list)}건."
+        )
     else:
         result["status"] = "success"
-        result["message"] = f"입장 {len(entered)}건 완료, 스킵 {len(skipped)}건."
+        result["message"] = (
+            f"입장 {len(entered)}건 완료, 이미입장 {len(already_entered)}건, 스킵 {len(skipped)}건."
+        )
 
     return result
 
 
-def run_account(account: str, credentials_path: Path, headless: bool, stay_seconds: int) -> dict:
+def run_account(
+    account: str,
+    credentials_path: Path,
+    headless: bool,
+    stay_seconds: int,
+    state: dict = None,
+    block_name: str = "manual",
+    state_file: Path | str = None,
+    ignore_state: bool = False,
+) -> dict:
     output = {
         "site": "doctorville_live_seminar",
         "account": account,
@@ -260,7 +336,15 @@ def run_account(account: str, credentials_path: Path, headless: bool, stay_secon
                 browser.close()
                 return output
 
-            output["live_seminar"] = task_live_seminar(page, stay_seconds)
+            output["live_seminar"] = task_live_seminar(
+                page,
+                stay_seconds,
+                account=account,
+                state=state,
+                block_name=block_name,
+                state_file=state_file,
+                ignore_state=ignore_state,
+            )
 
         except Exception as e:
             output["error"] = f"예외 발생: {e}"
@@ -278,21 +362,31 @@ def run_account(account: str, credentials_path: Path, headless: bool, stay_secon
 ACCOUNT_LABELS = {"bjh7790": "승진(bjh7790)", "wonju": "원주(wonju)"}
 
 
-def format_telegram_message(results: dict, date_str: str, stay_seconds: int) -> str:
-    lines = [f"🎥 *라이브 세미나 입장 결과* ({date_str})", ""]
+def format_telegram_message(
+    results: dict, date_str: str, stay_seconds: int, block_name: str = ""
+) -> str:
+    header = f"🎥 *라이브 세미나 입장 결과* ({date_str})"
+    if block_name:
+        header += f" [{block_name}]"
+    lines = [header, ""]
 
     for acc, r in results.items():
         label = ACCOUNT_LABELS.get(acc, acc)
         ls = r.get("live_seminar", {})
         e = daily_runner.format_status_emoji(ls.get("status", "failed"))
         entered = ls.get("entered", [])
+        already_entered = ls.get("already_entered", [])
         skipped = ls.get("skipped", [])
         failed = ls.get("failed", [])
 
         lines.append(f"*{label}* {e}")
-        lines.append(f"  입장 {len(entered)}건(각 {stay_seconds}초) / 스킵 {len(skipped)}건 / 실패 {len(failed)}건")
+        lines.append(
+            f"  입장 {len(entered)}건(각 {stay_seconds}초) / 이미입장 {len(already_entered)}건 / 스킵 {len(skipped)}건 / 실패 {len(failed)}건"
+        )
         if entered:
-            lines.append(f"  └ seminarId: {entered}")
+            lines.append(f"  └ 신규 입장 seminarId: {entered}")
+        if already_entered:
+            lines.append(f"  └ 이미 입장 seminarId: {already_entered}")
         for f in failed[:3]:
             lines.append(f"  └ 실패 {f['seminarId']}: {daily_runner._short(f.get('message', ''))}")
         if r.get("error"):
@@ -307,7 +401,7 @@ def format_telegram_message(results: dict, date_str: str, stay_seconds: int) -> 
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="닥터빌 라이브 세미나 자동 입장 (수동 실행 전용)")
+    parser = argparse.ArgumentParser(description="닥터빌 라이브 세미나 자동 입장")
     parser.add_argument(
         "--account", default="all", choices=["all", "bjh7790", "wonju"],
         help="처리할 계정 (기본: all = bjh7790+wonju 순회)"
@@ -322,6 +416,23 @@ def main():
         help="credentials.json 경로 (기본: 스크립트 상위 폴더)"
     )
     parser.add_argument(
+        "--state-file",
+        default=str(SCRIPT_DIR / "state" / "seminar_entered.json"),
+        help="상태 저장 JSON 파일 경로"
+    )
+    parser.add_argument(
+        "--block", default="auto", choices=["lunch", "evening", "manual", "auto"],
+        help="실행 블록 지정 (기본: auto = KST 시각 유도)"
+    )
+    parser.add_argument(
+        "--ignore-state", action="store_true",
+        help="상태 무시하고 전체 세미나 재입장"
+    )
+    parser.add_argument(
+        "--always-notify", action="store_true",
+        help="변화가 없어도 텔레그램 전송"
+    )
+    parser.add_argument(
         "--headed", action="store_true",
         help="브라우저 창을 띄워서 실행 (기본: headless)"
     )
@@ -333,11 +444,26 @@ def main():
 
     accounts = ["bjh7790", "wonju"] if args.account == "all" else [args.account]
     credentials_path = Path(args.credentials)
+    state_file = Path(args.state_file)
+
+    kst = timezone(timedelta(hours=9))
+    today_str = datetime.now(kst).strftime("%Y-%m-%d")
+    state = load_state(state_file, today_str)
+    block_name = determine_block_name(args.block)
 
     results = {}
     for i, acc in enumerate(accounts, start=1):
-        print(f"[{i}/{len(accounts)}] {acc} 라이브 세미나 입장 시작...")
-        results[acc] = run_account(acc, credentials_path, headless=not args.headed, stay_seconds=args.stay_seconds)
+        print(f"[{i}/{len(accounts)}] {acc} 라이브 세미나 입장 시작 (블록: {block_name})...")
+        results[acc] = run_account(
+            acc,
+            credentials_path,
+            headless=not args.headed,
+            stay_seconds=args.stay_seconds,
+            state=state,
+            block_name=block_name,
+            state_file=state_file,
+            ignore_state=args.ignore_state,
+        )
         print(json.dumps(results[acc], ensure_ascii=False, indent=2))
 
     print("\n=== 최종 결과 ===")
@@ -349,13 +475,15 @@ def main():
     )
 
     if not args.no_telegram:
-        daily_runner.load_telegram_credentials(str(credentials_path))
-        kst = timezone(timedelta(hours=9))
-        date_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
-        msg = format_telegram_message(results, date_str, args.stay_seconds)
-        print("\n[telegram] 전송 중...")
-        ok = daily_runner.send_telegram(msg)
-        print(f"[telegram] {'성공' if ok else '실패'}")
+        if should_notify(results, always_notify=args.always_notify):
+            daily_runner.load_telegram_credentials(str(credentials_path))
+            date_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
+            msg = format_telegram_message(results, date_str, args.stay_seconds, block_name=block_name)
+            print("\n[telegram] 전송 중...")
+            ok = daily_runner.send_telegram(msg)
+            print(f"[telegram] {'성공' if ok else '실패'}")
+        else:
+            print("\n[telegram] 전송 조건 미충족 (신규 입장/실패 없음, --always-notify 미지정). 건너뜀.")
     else:
         print("\n[telegram] 건너뜀 (--no-telegram)")
 
