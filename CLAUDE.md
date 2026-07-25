@@ -121,12 +121,18 @@ cd ~/Desktop/DocAuto
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-dev.txt   # 테스트 의존성 (pytest)
 playwright install chromium
 deactivate
 ```
 
 이후 실행 (venv python 절대경로 직접 호출):
 ```bash
+# 단위 테스트 실행
+python3 -m pytest
+# 또는
+venv/bin/pytest
+
 # 전체 루틴 (텔레그램 전송 포함)
 venv/bin/python3 scripts/daily_runner.py
 venv/bin/python3 scripts/daily_runner.py --no-telegram   # 전송 생략
@@ -174,9 +180,9 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 - pId·문항수는 매일 바뀌므로 "오늘의 퀴즈" 카드 → 제품 상세 경로로 동적 탐색
 - **탐색 경로(2026-07-20 수정):** `/product/main` → 이달의 퀴즈 캘린더(`.quiz_calender`) → 오늘 날짜 다음 줄에서 제품명 추출 + 오늘 셀(`td.today`) 내 hidden input `.pIdCls`에서 pId 직접 추출 → 상세(`/product/productView?pId=XXX`). **`/product/medicineList`에서 이름으로 검색하던 이전 방식은 폐기.** medicineList는 의약품 전용 목록이라 모비케어 같은 의료기기(`/product/instrumentList` 카테고리)는 등록돼 있지 않아 pId 조회 실패 → 퀴즈 시도 자체가 안 됨(`failed: medicineList에서 pId를 찾지 못함`). 캘린더 셀의 `pIdCls`는 카테고리와 무관하게 항상 존재해 더 안정적. medicineList 검색은 폴백으로만 유지.
 - 퀴즈 레이어 DOM(`.question_area` 반복 구조, 2026-07-19 확인): 문항당 `<span class="questionN">QN</span><p class="txt_question">...</p><ul class="question_choice"><li><input name="an_N" value="V"><label>보기텍스트</label></li>...</ul>`, 실제 문항 수는 hidden input `#questionCnt`로도 확인 가능.
-- **구형식 보기 번호 폴백 (`quiz_answers_legacy.json`, 2026-07-25~):** 문제은행(`quiz_answers.json`)에 없거나 매칭 실패 시 `quiz_answers_legacy.json` (`{ "제품명": ["1", "2", "3"] }`) 폴백을 사용하여 보기 번호 순서 기반 시도를 보완 수행.
-- **텔레그램 인박스 파싱 (`scripts/telegram_inbox.py`):** 텔레그램 봇 채팅으로 `에빅사 1 2 3` 또는 `[제품명] [정답1] [정답2] ...` 형식의 메시지를 전송하면 `telegram_inbox.py --fetch`가 메시지를 수신·파싱하여 `quiz_answers_legacy.json`에 정답을 등록함. 워크플로우 3단계(`--fetch` → git commit `chore: update legacy quiz answers from telegram inbox [skip ci]` → `--confirm-offset`)로 안전하게 처리됨.
-- **오답 삭제 (Bank Eviction):** 퀴즈 제출 후 오답("정답이 아닙니다" / "오답") 감지 시, 사용된 `quiz_answers.json` 문제은행 항목 또는 `quiz_answers_legacy.json` 구형식 정답 항목을 자동 삭제(eviction)하여 다음 실행 시 오답 재시도를 방지함.
+- **구형식 보기 번호 폴백 (`quiz_answers_legacy.json`, 2026-07-25~):** 문제은행(`quiz_answers.json`)에 없거나 매칭 실패 시 `quiz_answers_legacy.json` (`{ "에빅사": "111" }` 문자열 포맷, 리스트 `["1", "2", "3"]` 사용 안 함) 폴백을 사용하여 보기 번호 순서 기반 시도를 보완 수행.
+- **텔레그램 인박스 파싱 (`scripts/telegram_inbox.py`):** 텔레그램 봇 채팅으로 `에빅사 111` 또는 `[제품명] [정답시퀀스]` (공백 없는 시퀀스 문자열, 예: `"111"`) 형식의 메시지를 전송하면 `telegram_inbox.py --fetch`가 메시지를 수신·파싱하여 `quiz_answers_legacy.json`에 정답을 등록함. 워크플로우 3단계(`--fetch` → git commit `chore: update legacy quiz answers from telegram inbox [skip ci]` → `--confirm-offset`)로 안전하게 처리됨.
+- **오답 삭제 (Bank Eviction):** 퀴즈 제출 후 `:text('오답입니다')` 오답 팝업 감지 시, 해당 키를 `quiz_answers.json` 문제은행과 `quiz_answers_legacy.json` 구형식 정답 양쪽에서 모두 자동 삭제(eviction)하여 다음 실행 시 오답 재시도를 방지함.
 - **정답 자동 학습:** 퀴즈 제출 성공 시 화면에 표시된 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 저장하고 GitHub Actions 완료 시 자동 커밋(`chore: update quiz answers bank from run [skip ci]`).
 
 ---
@@ -187,7 +193,7 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 
 ### 닥터빌 (doctorville.py)
 - 로그인: 인트로(`/intro`) → `a[href*="mims-account.shop.co.kr"][href*="/login"]` 추출 → mims 로그인(`input[name="identifier"]`, `input[type="password"]`, `button[type="submit"]:has-text("로그인")`)
-- 퀴즈 레이어: `#quizLayerPop` / 라디오 `input[name="an_N"][value="V"]` / 제출 `.btn_answer` / 완료 시 레이어 내 "축하드립니다" 텍스트(→ already_done) / 닫기 `.btn_cancel`
+- 퀴즈 레이어: `#quizLayerPop` / 라디오 `input[name="an_N"][value="V"]` / 제출 `.btn_answer` / 오답 시 `:text('오답입니다')` 감지(→ bank eviction) / 정답 시 `:text('정답입니다')` / 완료 시 레이어 내 "축하드립니다" 텍스트(→ already_done) / 닫기 `.btn_cancel`
 - 세미나 목록: `span.ico_apply` → `a.list_detail`의 `seminarId`
 - 세미나 신청: `/seminar/seminarDetail?seminarId=XXXX` → `a.btn_bn`("신청하기") → 개인정보 동의 `button.btn_confirm`
 
@@ -235,7 +241,8 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 - 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아, 각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
 - 계정: `--account all|bjh7790|wonju` (기본 all = 두 계정 순회).
 - **상태 관리 (`scripts/state/seminar_entered.json`):**
-  - 당일 이미 입장한 세미나 ID 이력을 저장 (`{ "YYYY-MM-DD": { "bjh7790": [seminarId, ...], "wonju": [...] } }`).
+  - 당일 이미 입장한 세미나 ID 이력을 저장하며, 정확한 스키마는 `{"date": "YYYY-MM-DD", "accounts": {"bjh7790": {"entered": [...], "blocks": {"lunch": [...], "evening": [...], "manual": [...]}}}}` 이다.
+  - `--block auto` 옵션은 KST 기준 16:00 경계를 사용해 점심 세미나(16:00 KST 이전 → `lunch`)와 저녁 세미나(16:00 KST 이후 → `evening`) 블록을 자동 구분한다.
   - GitHub Actions `actions/cache`로 실행 간 이력을 보존하여 30분 간격 실행 시 중복 진입 방지.
   - 필요 시 `--ignore-state` 옵션으로 상태 무시 실행 가능.
 - 결과는 텔레그램으로 전송(`--no-telegram`으로 생략 가능).

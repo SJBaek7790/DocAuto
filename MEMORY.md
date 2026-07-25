@@ -78,17 +78,18 @@
   - Actions 탭 수동 실행(`workflow_dispatch`)도 유지.
 
 ### 2. 라이브 세미나 상태 관리 (`scripts/state/seminar_entered.json`)
-- 날짜 및 계정별 입장한 세미나 ID 이력을 `scripts/state/seminar_entered.json`에 저장 (`{ "YYYY-MM-DD": { "bjh7790": [1234], "wonju": [5678] } }`).
+- 날짜 및 계정별 입장한 세미나 ID 이력을 `scripts/state/seminar_entered.json`에 저장하며, 정확한 스키마는 `{"date": "YYYY-MM-DD", "accounts": {"bjh7790": {"entered": [...], "blocks": {"lunch": [...], "evening": [...], "manual": [...]}}}}` 이다.
+- `--block auto` 옵션 사용 시 KST 16:00 경계(16:00 KST 이전 `lunch`, 16:00 KST 이후 `evening`)로 블록을 자동 구분한다.
 - GitHub Actions `actions/cache`로 런 간 상태를 유지하여 30분 간격 실행 시 이미 입장 처리된 세미나의 중복 진입 방지.
 - 필요 시 `--ignore-state` 파라미터로 이력을 무시하고 전체 시도 가능.
 
 ### 3. 텔레그램 인박스 파서 (`scripts/telegram_inbox.py`)
-- 텔레그램 봇 채팅에서 `에빅사 1 2 3` 또는 `[제품명] [정답1] [정답2] ...` 메시지를 수신하여 `quiz_answers_legacy.json` (`{ "에빅사": ["1", "2", "3"] }`)에 자동으로 정답 저장.
+- 텔레그램 봇 채팅에서 `에빅사 111` 또는 `[제품명] [정답시퀀스]` (공백 없는 시퀀스 문자열, 예: `"111"`) 메시지를 수신하여 `quiz_answers_legacy.json` (`{ "에빅사": "111" }` 문자열 포맷, 리스트 `["1", "2", "3"]` 사용 안 함)에 자동으로 정답 저장.
 - 워크플로우 3단계 연동: `--fetch` 실행 → git diff 감지 시 auto commit (`chore: update legacy quiz answers from telegram inbox [skip ci]`) → `--confirm-offset`으로 offset 확정.
 
 ### 4. 퀴즈 폴백, 오답 삭제(Eviction) 및 정답 자동 학습
 - **퀴즈 처리 순서:** `quiz_answers.json` (문제은행 텍스트 매칭) → `quiz_answers_legacy.json` (구형식 보기 번호 시퀀스 매칭) → `no_answer`.
-- **오답 삭제 (Bank Eviction):** 제출 결과 감지 시 오답("정답이 아닙니다" / "오답")인 경우, 해당 정답 항목을 `quiz_answers.json` 또는 `quiz_answers_legacy.json`에서 자동 삭제하여 다음 실행 시 동일 오답 제출을 방지.
+- **오답 삭제 (Bank Eviction):** 제출 결과 감지 시 `:text('오답입니다')` 오답 감지 시, 해당 키를 `quiz_answers.json` 문제은행과 `quiz_answers_legacy.json` 구형식 정답 양쪽에서 모두 자동 삭제(eviction)하여 다음 실행 시 동일 오답 제출을 방지.
 - **정답 자동 학습:** 제출 결과 성공 시 화면의 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 학습 및 커밋 (`chore: update quiz answers bank from run [skip ci]`).
 
 ---
