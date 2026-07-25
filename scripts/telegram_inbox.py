@@ -86,6 +86,7 @@ def process_updates(
     allowed_chat_id: int | str,
     legacy_path: str | Path,
     bot=None,
+    quiz_answers_path: str | Path | None = None,
 ) -> int:
     legacy_path = Path(legacy_path)
     legacy_dict = {}
@@ -95,6 +96,19 @@ def process_updates(
                 legacy_dict = json.load(f)
         except Exception:
             legacy_dict = {}
+
+    if quiz_answers_path is None:
+        quiz_answers_path = legacy_path.parent / "quiz_answers.json"
+    else:
+        quiz_answers_path = Path(quiz_answers_path)
+
+    quiz_dict = {}
+    if quiz_answers_path.exists():
+        try:
+            with open(quiz_answers_path, "r", encoding="utf-8") as f:
+                quiz_dict = json.load(f)
+        except Exception:
+            quiz_dict = {}
 
     max_update_id = 0
     modified = False
@@ -119,6 +133,7 @@ def process_updates(
 
         message_id = message.get("message_id")
         saved_items = []
+        warning_items = []
         error_items = []
 
         for line in text.splitlines():
@@ -128,16 +143,21 @@ def process_updates(
             parsed = parse_inbox_line(line)
             if parsed:
                 product, seq = parsed
-                legacy_dict[product] = seq
-                saved_items.append((product, seq))
-                modified = True
+                if product in quiz_dict or product in legacy_dict:
+                    legacy_dict[product] = seq
+                    saved_items.append((product, seq))
+                    modified = True
+                else:
+                    warning_items.append(f"⚠️ '{product}'은(는) quiz_answers.json에 없는 제품명입니다. (오타 확인)")
             else:
                 error_items.append(line)
 
-        if bot and (saved_items or error_items):
+        if bot and (saved_items or warning_items or error_items):
             reply_lines = []
             for p, s in saved_items:
                 reply_lines.append(f"✅ {p} → {s} 저장")
+            for w in warning_items:
+                reply_lines.append(w)
             for err in error_items:
                 reply_lines.append(f"❌ \"{err}\" 형식 오류: 시퀀스는 숫자·o·x 만 가능")
 

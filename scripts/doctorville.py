@@ -97,6 +97,7 @@ def _record_answers(product: str, pairs: list[tuple[str, str]]) -> None:
     tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
     with open(tmp_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
     os.replace(tmp_file, QUIZ_ANSWERS_PATH)
 
 
@@ -110,7 +111,21 @@ def _evict_answers(product: str, q_texts: list[str]) -> None:
         tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
         os.replace(tmp_file, QUIZ_ANSWERS_PATH)
+
+
+def _evict_legacy_answers(product: str) -> None:
+    if not LEGACY_ANSWERS_PATH.exists():
+        return
+    data = load_quiz_answers_legacy()
+    if product in data:
+        data.pop(product, None)
+        tmp_file = LEGACY_ANSWERS_PATH.with_suffix(".tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp_file, LEGACY_ANSWERS_PATH)
 
 
 def save_screenshot(page, tag: str) -> str:
@@ -595,6 +610,9 @@ def task_quiz(page, creds: dict) -> dict:
                 if source == "bank":
                     wrong_q_texts = [selected_pairs[w - 1][0] for w in wrong_nums]
                     _evict_answers(product, wrong_q_texts)
+
+            if source == "legacy":
+                _evict_legacy_answers(product)
 
             result["status"] = "failed"
             result["source"] = source
