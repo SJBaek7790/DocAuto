@@ -1,4 +1,3 @@
-import pytest
 from doctorville import legacy_to_choice_indices, parse_wrong_numbers
 from telegram_inbox import parse_inbox_line
 from seminar_live import merge_state, should_notify
@@ -24,6 +23,7 @@ def test_legacy_to_choice_indices_invalid():
 
 def test_parse_wrong_numbers():
     assert parse_wrong_numbers("1, 3번 오답입니다.") == [1, 3]
+    assert parse_wrong_numbers("0, 1, 3번 오답입니다.") == [1, 3]
     assert parse_wrong_numbers("2번 오답입니다.") == [2]
     assert parse_wrong_numbers("정답입니다") == []
     assert parse_wrong_numbers("축하드립니다") == []

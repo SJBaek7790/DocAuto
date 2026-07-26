@@ -127,8 +127,6 @@ def should_notify(results: dict, always_notify: bool = False) -> bool:
         return True
     if not isinstance(results, dict):
         return True
-    if results.get("status") == "failed":
-        return True
     for acc, r in results.items():
         if not isinstance(r, dict):
             continue
@@ -158,77 +156,61 @@ def get_live_seminar_ids(page) -> list[str]:
     """)
 
     seen = set()
-    ids: list[str] = []
+    deduped = []
     for sid in raw_ids:
         if sid not in seen:
             seen.add(sid)
-            ids.append(sid)
-    return ids
+            deduped.append(sid)
+    return deduped
 
 
 # ---------------------------------------------------------------------------
-# 세미나 1건 입장 → 대기 → 종료
+# 세미나 상세 입장 & 스트리밍 창 팝업 대기
 # ---------------------------------------------------------------------------
 
-def enter_and_wait(page, sid: str, stay_seconds: int) -> dict:
-    detail_url = f"{doctorville.DOCTORVILLE_BASE}/seminar/seminarDetail?seminarId={sid}"
+def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
+    """단일 seminarId 상세 페이지로 이동해 '입장하기' 클릭 → 팝업창에서 stay_seconds초 대기 후 닫기."""
+    detail_url = f"{doctorville.SEMINAR_DETAIL_URL}?seminarId={seminar_id}"
     page.goto(detail_url, wait_until="domcontentloaded")
+    page.wait_for_timeout(1000)
 
-    btn = page.locator("a.btn_bn.btn_enter")
+    btn = page.locator("a.btn_bn").first
+    if btn.count() == 0 or not btn.is_visible():
+        return {"status": "skipped", "message": f"세미나 {seminar_id}: 입장버튼(a.btn_bn) 없음"}
+
+    btn_text = btn.inner_text().strip()
+    if "입장" not in btn_text:
+        return {"status": "skipped", "message": f"세미나 {seminar_id}: 버튼 텍스트 '{btn_text}' (입장불가)"}
+
+    # popup 이벤트 수신 준비 후 클릭
     try:
-        btn.first.wait_for(state="visible", timeout=ENTER_BTN_WAIT_MS)
+        with page.expect_popup(timeout=DEFAULT_TIMEOUT_MS) as popup_info:
+            btn.click()
+        popup = popup_info.value
     except PlaywrightTimeoutError:
         return {
-            "seminarId": sid,
-            "status": "skipped",
-            "message": "입장하기 버튼 없음(방송 종료/미시작 추정).",
+            "status": "failed",
+            "message": f"세미나 {seminar_id}: 팝업창(expect_popup) 열림 타임아웃",
+            "screenshot": save_screenshot(page, f"popup_fail_{seminar_id}"),
         }
-
-    # playOnPopup 실행 전 혹시 모를 native confirm/alert 방어 (다른 스크립트와 동일 패턴)
-    dialogs_seen: list[str] = []
-
-    def on_dialog(dialog):
-        dialogs_seen.append(dialog.message)
-        dialog.accept()
-
-    page.on("dialog", on_dialog)
 
     try:
-        try:
-            with page.expect_popup(timeout=DEFAULT_TIMEOUT_MS) as popup_info:
-                btn.first.click()
-            popup = popup_info.value
-        except PlaywrightTimeoutError:
-            return {
-                "seminarId": sid,
-                "status": "failed",
-                "message": "입장 클릭 후 팝업 창이 열리지 않음.",
-                "screenshot": save_screenshot(page, f"enter_fail_{sid}"),
-            }
+        popup.wait_for_load_state("domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        pass
 
-        try:
-            popup.wait_for_load_state("domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
-        except PlaywrightTimeoutError:
-            pass  # 스트리밍 페이지는 load 이벤트가 늦거나 안 올 수 있음 — 무시하고 진행
+    popup.wait_for_timeout(stay_seconds * 1000)
 
-        time.sleep(stay_seconds)
+    try:
+        popup.close()
+    except Exception:
+        pass
 
-        try:
-            popup.close()
-        except Exception:
-            pass  # 이미 닫혔거나 창 정리 중이면 무시
-
-        return {
-            "seminarId": sid,
-            "status": "success",
-            "message": f"{stay_seconds}초 시청 후 종료.",
-        }
-    finally:
-        page.remove_listener("dialog", on_dialog)
+    return {"status": "success", "message": f"세미나 {seminar_id}: {stay_seconds}초 체류 완료"}
 
 
 # ---------------------------------------------------------------------------
-# 계정 1개 처리
+# 계정별 세미나 종합 수행
 # ---------------------------------------------------------------------------
 
 def task_live_seminar(
@@ -239,8 +221,9 @@ def task_live_seminar(
     block_name: str = "manual",
     state_file: Path | str = None,
     ignore_state: bool = False,
+    dry_run: bool = False,
 ) -> dict:
-    result: dict = {
+    result = {
         "status": "failed",
         "entered": [],
         "already_entered": [],
@@ -269,6 +252,11 @@ def task_live_seminar(
         sid_int = int(sid)
         if sid_int in already_entered_set:
             already_entered.append(sid_int)
+            continue
+
+        if dry_run:
+            skipped.append(sid_int)
+            print(f"[dry-run] 계정 '{account}' 세미나 {sid_int} 입장 스킵 (dry-run 모드)")
             continue
 
         r = enter_and_wait(page, sid, stay_seconds)
@@ -310,6 +298,7 @@ def run_account(
     block_name: str = "manual",
     state_file: Path | str = None,
     ignore_state: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     output = {
         "site": "doctorville_live_seminar",
@@ -344,6 +333,7 @@ def run_account(
                 block_name=block_name,
                 state_file=state_file,
                 ignore_state=ignore_state,
+                dry_run=dry_run,
             )
 
         except Exception as e:
@@ -360,6 +350,7 @@ def run_account(
 # ---------------------------------------------------------------------------
 
 ACCOUNT_LABELS = {"bjh7790": "승진(bjh7790)", "wonju": "원주(wonju)"}
+BLOCK_LABELS = {"lunch": "점심", "evening": "저녁", "manual": "수동"}
 
 
 def format_telegram_message(
@@ -367,7 +358,8 @@ def format_telegram_message(
 ) -> str:
     header = f"🎥 *라이브 세미나 입장 결과* ({date_str})"
     if block_name:
-        header += f" [{block_name}]"
+        b_label = BLOCK_LABELS.get(block_name, block_name)
+        header += f" [{b_label}]"
     lines = [header, ""]
 
     for acc, r in results.items():
@@ -433,6 +425,10 @@ def main():
         help="변화가 없어도 텔레그램 전송"
     )
     parser.add_argument(
+        "--dry-run", action="store_true",
+        help="라이브 세미나 목록만 확인하고 입장은 클릭하지 않음"
+    )
+    parser.add_argument(
         "--headed", action="store_true",
         help="브라우저 창을 띄워서 실행 (기본: headless)"
     )
@@ -463,6 +459,7 @@ def main():
             block_name=block_name,
             state_file=state_file,
             ignore_state=args.ignore_state,
+            dry_run=args.dry_run,
         )
         print(json.dumps(results[acc], ensure_ascii=False, indent=2))
 

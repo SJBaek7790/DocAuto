@@ -181,9 +181,9 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 - 탐색 경로(2026-07-20 수정): `/product/main` → 이달의 퀴즈 캘린더(`.quiz_calender`) → 오늘 날짜 다음 줄에서 제품명 추출 + 오늘 셀(`td.today`) 내 hidden input `.pIdCls`에서 pId 직접 추출 → 상세(`/product/productView?pId=XXX`).
 - 퀴즈 레이어 DOM(`.question_area` 반복 구조, 2026-07-19 확인): 문항당 `<span class="questionN">QN</span><p class="txt_question">...</p><ul class="question_choice"><li><input name="an_N" value="V"><label>보기텍스트</label></li>...</ul>`, 실제 문항 수는 hidden input `#questionCnt`로도 확인 가능.
 - **구형식 보기 번호 폴백 (`quiz_answers_legacy.json`, 2026-07-25~):** 문제은행(`quiz_answers.json`)에 없거나 매칭 실패 시 `quiz_answers_legacy.json` (`{ "에빅사": "111" }` 문자열 포맷, 리스트 `["1", "2", "3"]` 사용 안 함) 폴백을 사용하여 보기 번호 순서 기반 시도를 보완 수행.
-- **텔레그램 인박스 파싱 (`scripts/telegram_inbox.py`):** 텔레그램 봇 채팅으로 `에빅사 111` 또는 `[제품명] [정답시퀀스]` (공백 없는 시퀀스 문자열, 예: `"111"`) 형식의 메시지를 전송하면 `telegram_inbox.py --fetch`가 메시지를 수신·파싱하여 `quiz_answers_legacy.json`에 정답을 등록함. 워크플로우 3단계(`--fetch` → git commit `chore: update legacy quiz answers from telegram inbox [skip ci]` → `--confirm-offset`)로 안전하게 처리됨.
-- **오답 삭제 (Bank Eviction):** 퀴즈 제출 후 `:text('오답입니다')` 오답 팝업 감지 시, 해당 키를 `quiz_answers.json` 문제은행과 `quiz_answers_legacy.json` 구형식 정답 양쪽에서 모두 자동 삭제(eviction)하여 다음 실행 시 오답 재시도를 방지함.
-- **정답 자동 학습:** 퀴즈 제출 성공 시 화면에 표시된 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 저장하고 GitHub Actions 완료 시 자동 커밋(`chore: update quiz answers bank from run [skip ci]`).
+- **텔레그램 인박스 파싱 (`scripts/telegram_inbox.py`):** 텔레그램 봇 채팅으로 `에빅사 111` 또는 `[제품명] [정답시퀀스]` 형식 메시지를 전송하면 `telegram_inbox.py --fetch`가 메시지를 파싱해 `quiz_answers_legacy.json`에 저장. 문제은행에 없는 신규 제품명은 경고 문구와 함께 등록(`⚠️ 신제품 → 111 저장 (신제품은(는) quiz_answers.json에 없는 제품명 — 오타 확인)`). 워크플로우 3단계(`--fetch` → git commit `chore: update legacy quiz answers from telegram inbox [skip ci]` → `--confirm-offset`)로 안전하게 처리됨.
+- **오답 삭제 (Bank & Legacy Eviction):** 퀴즈 제출 후 `:text('오답입니다')` 오답 팝업 감지 시, 해당 키를 `quiz_answers.json` 문제은행과 `quiz_answers_legacy.json` 구형식 정답 양쪽에서 모두 자동 삭제(eviction)하여 다음 실행 시 오답 재시도를 방지함. 사후 커밋 스텝이 두 파일 모두 커밋하여 CI 간 이력을 보존함.
+- **정답 자동 학습:** 퀴즈 제출 성공 시 화면에 표시된 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 저장하고 GitHub Actions 완료 시 자동 커밋(`chore: update quiz answers bank and legacy eviction from run [skip ci]`).
 
 ---
 

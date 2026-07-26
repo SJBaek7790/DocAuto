@@ -57,7 +57,7 @@ def test_process_updates_unknown_product_warning(tmp_path):
             "message": {
                 "message_id": 60,
                 "chat": {"id": 12345},
-                "text": "오타제품 123"
+                "text": "신제품 123"
             }
         }
     ]
@@ -66,9 +66,9 @@ def test_process_updates_unknown_product_warning(tmp_path):
     assert max_offset == 201
     
     updated_legacy = json.loads(legacy_file.read_text(encoding="utf-8"))
-    assert "오타제품" not in updated_legacy
+    assert updated_legacy["신제품"] == "123"
 
     mock_bot.send_message.assert_called_once()
     reply_text = mock_bot.send_message.call_args[1]["text"]
-    assert "⚠️ '오타제품'은(는) quiz_answers.json에 없는 제품명입니다. (오타 확인)" in reply_text
+    assert "⚠️ 신제품 → 123 저장 (신제품은(는) quiz_answers.json에 없는 제품명 — 오타 확인)" in reply_text
 

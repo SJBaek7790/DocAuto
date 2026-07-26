@@ -143,12 +143,13 @@ def process_updates(
             parsed = parse_inbox_line(line)
             if parsed:
                 product, seq = parsed
-                if product in quiz_dict or product in legacy_dict:
-                    legacy_dict[product] = seq
+                is_known = (product in quiz_dict or product in legacy_dict)
+                legacy_dict[product] = seq
+                modified = True
+                if is_known:
                     saved_items.append((product, seq))
-                    modified = True
                 else:
-                    warning_items.append(f"⚠️ '{product}'은(는) quiz_answers.json에 없는 제품명입니다. (오타 확인)")
+                    warning_items.append(f"⚠️ {product} → {seq} 저장 ({product}은(는) quiz_answers.json에 없는 제품명 — 오타 확인)")
             else:
                 error_items.append(line)
 
@@ -202,7 +203,7 @@ def main():
     parser.add_argument("--fetch", action="store_true", help="Fetch updates and process legacy answers")
     parser.add_argument("--confirm-offset", type=int, help="Confirm offset N with Telegram servers")
     parser.add_argument("--credentials", type=str, default=str(DEFAULT_CREDENTIALS), help="Path to credentials.json")
-    parser.add_argument("--legacy-file", type=str, default=str(DEFAULT_LEGACY_FILE), help="Path to quiz_answers_legacy.json")
+    parser.add_argument("--legacy-file", "--legacy-path", dest="legacy_file", type=str, default=str(DEFAULT_LEGACY_FILE), help="Path to quiz_answers_legacy.json")
     args = parser.parse_args()
 
     token, chat_id = get_telegram_credentials(Path(args.credentials))

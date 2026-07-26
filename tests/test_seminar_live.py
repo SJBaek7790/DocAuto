@@ -35,3 +35,13 @@ def test_should_notify_always_notify():
     }
     assert should_notify(res_none, always_notify=False) is False
     assert should_notify(res_none, always_notify=True) is True
+
+def test_format_telegram_message():
+    from seminar_live import format_telegram_message
+    res = {
+        "bjh7790": {
+            "live_seminar": {"status": "success", "entered": [123], "already_entered": [], "skipped": [], "failed": []}
+        }
+    }
+    msg = format_telegram_message(res, "2026-07-26", 20, block_name="lunch")
+    assert "[점심]" in msg

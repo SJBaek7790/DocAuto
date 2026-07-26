@@ -172,7 +172,7 @@ def parse_wrong_numbers(text: str) -> list[int]:
     if not match:
         return []
     nums_str = match.group(1)
-    return [int(n.strip()) for n in re.findall(r'\d+', nums_str)]
+    return [int(n.strip()) for n in re.findall(r'\d+', nums_str) if int(n.strip()) >= 1]
 
 
 
