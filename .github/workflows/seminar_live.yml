@@ -2,9 +2,11 @@ name: 닥터빌 라이브 세미나 자동/수동 입장
 
 on:
   schedule:
-    # 정각/30분은 GitHub 스케줄러 혼잡 구간이라 지연·누락이 잦다 → 7분 오프셋
-    - cron: '7,37 1-4 * * *'  # 점심 세미나 (KST 10:07~13:37, UTC 01:07~04:37)
-    - cron: '7,37 7-9 * * *'  # 저녁 세미나 (KST 16:07~18:37, UTC 07:07~09:37)
+    # 주 트리거는 cron-job.org → workflow_dispatch API (docs/external-cron.md).
+    # 아래 schedule은 백스톱이다. GitHub 스케줄러는 지연·누락이 잦으므로 정각/30분을
+    # 피하고, 외부 트리거(:07/:37)와 겹치지 않도록 10분 뒤로 둔다.
+    - cron: '17,47 1-4 * * *'  # 점심 세미나 (KST 10:17~13:47, UTC 01:17~04:47)
+    - cron: '17,47 7-9 * * *'  # 저녁 세미나 (KST 16:17~18:47, UTC 07:17~09:47)
   workflow_dispatch:
     inputs:
       account:

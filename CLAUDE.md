@@ -233,9 +233,12 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 
 ## 라이브 세미나 자동/수동 입장 (`seminar_live.py`, 2026-07-25 업데이트)
 
-- **스케줄:** `.github/workflows/seminar_live.yml`에 30분 간격 cron 설정.
-  - 점심 세미나: KST 10:00~13:30 (`0,30 1-4 * * *` UTC)
-  - 저녁 세미나: KST 16:00~18:30 (`0,30 7-9 * * *` UTC)
+- **스케줄:** 30분 간격. 주 트리거는 **외부 cron(cron-job.org) → `workflow_dispatch` API** —
+  설정값과 발급 절차는 [`docs/external-cron.md`](docs/external-cron.md) 참조.
+  - 점심 세미나: KST 10:07~13:37 / 저녁 세미나: KST 16:07~18:37
+  - `.github/workflows/seminar_live.yml`의 `schedule` 블록(`17,47 1-4`·`17,47 7-9` UTC)은
+    백스톱이다. GitHub 공용 스케줄러는 지연·누락이 잦아(2026-07-25~27 기대 28회 중 3회 발화,
+    최대 80분 지연) 단독으로 신뢰할 수 없다.
   - Actions 탭 수동 실행(`workflow_dispatch`)도 지원.
 - 스크립트: `scripts/seminar_live.py`
 - 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아, 각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
