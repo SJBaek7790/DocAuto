@@ -49,6 +49,7 @@ ATTEND_URL          = f"{DOCTORVILLE_BASE}/event/attend"
 PRODUCT_MAIN_URL    = f"{DOCTORVILLE_BASE}/product/main"
 MEDICINE_LIST_URL   = f"{DOCTORVILLE_BASE}/product/medicineList"
 SEMINAR_MAIN_URL    = f"{DOCTORVILLE_BASE}/seminar/main"
+SEMINAR_DETAIL_URL  = f"{DOCTORVILLE_BASE}/seminar/seminarDetail"
 
 DEFAULT_TIMEOUT_MS  = 30000
 SCRIPT_DIR          = Path(__file__).resolve().parent
@@ -666,7 +667,7 @@ def task_seminar(page, creds: dict) -> dict:
     failed = []
 
     for sid in seminar_ids:
-        detail_url = f"{DOCTORVILLE_BASE}/seminar/seminarDetail?seminarId={sid}"
+        detail_url = f"{SEMINAR_DETAIL_URL}?seminarId={sid}"
         page.goto(detail_url, wait_until="domcontentloaded")
 
         btn = page.locator("a.btn_bn")
