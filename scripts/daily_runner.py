@@ -7,7 +7,8 @@
   2. 닥터빌 출석+퀴즈+세미나 (bjh7790)
   3. 닥터빌 출석+퀴즈+세미나 (wonju)
   4. HMP 캡슐 출석 (bjh7790)
-  5. 결과를 텔레그램 bot으로 전송
+  5. 인터엠디 오늘의 퀴즈 (bjh7790)
+  6. 결과를 텔레그램 bot으로 전송
 
 로컬(venv)·GitHub Actions(전역 pip) 양쪽에서 동일하게 동작한다.
 서브프로세스는 현재 인터프리터(sys.executable)로 실행하므로 별도 venv 경로가 필요없다.
@@ -168,12 +169,36 @@ def format_flat_block(label: str, r: dict, unit: str = "P") -> list[str]:
     return lines
 
 
+def format_intermd_block(r: dict) -> list[str]:
+    """인터엠디 퀴즈 결과를 라인으로 변환한다.
+
+    no_answer일 때는 오늘 문항·보기를 그대로 실어 보낸다. 사용자가 정답을
+    고른 뒤 텔레그램에 `인터엠디:<보기 텍스트>` 한 줄만 보내면 되게 하기 위함.
+    """
+    if not r:
+        return ["*인터엠디 퀴즈* ⏭️"]
+    e = format_status_emoji(r.get("status", "failed"))
+    lines = [f"*인터엠디 퀴즈* {e}"]
+    msg = r.get("message", "")
+    if msg and r.get("status") != "already_done":
+        lines.append(f"  └ {_short(msg, 300)}")
+    if r.get("status") == "no_answer":
+        if r.get("question"):
+            lines.append(f"  ❔ {r['question']}")
+        for c in r.get("choices", []):
+            lines.append(f"      - {c}")
+        lines.append("  → 텔레그램에 `인터엠디:<정답 보기>` 형식으로 보내주세요.")
+    return lines
+
+
 def format_telegram_message(results: dict, date_str: str) -> str:
     lines = [f"📋 *일일 자동화 결과* ({date_str})", ""]
 
     lines += format_flat_block("키메디 출석", results.get("keymedi", {}))
     lines.append("")
     lines += format_flat_block("HMP 캡슐 출석", results.get("hmp", {}), unit="캡슐")
+    lines.append("")
+    lines += format_intermd_block(results.get("intermd", {}))
     lines.append("")
 
     dv_b = results.get("doctorville_bjh7790", {})
@@ -264,28 +289,32 @@ def main():
     date_str = datetime.now(kst).strftime("%Y-%m-%d")
     results = {}
 
-    print("[1/4] 키메디 출석...")
+    print("[1/5] 키메디 출석...")
     results["keymedi"] = run_script("keymedi.py", extra)
     print(json.dumps(results["keymedi"], ensure_ascii=False))
 
     # 닥터빌은 출석+퀴즈+세미나 3단계를 순차 실행하며, 신청 가능한 세미나 수에 따라
     # 소요 시간이 크게 늘어난다. 2026-07-15~16 실제로 두 계정 모두 기존 120초
     # 제한에 걸려 "타임아웃 (120초)" failed로 잘려나간 사례가 있어 240초로 늘린다.
-    print("[2/4] 닥터빌 (bjh7790)...")
+    print("[2/5] 닥터빌 (bjh7790)...")
     results["doctorville_bjh7790"] = run_script(
         "doctorville.py", ["--account", "bjh7790"] + extra, timeout=240
     )
     print(json.dumps(results["doctorville_bjh7790"], ensure_ascii=False, indent=2))
 
-    print("[3/4] 닥터빌 (wonju)...")
+    print("[3/5] 닥터빌 (wonju)...")
     results["doctorville_wonju"] = run_script(
         "doctorville.py", ["--account", "wonju"] + extra, timeout=240
     )
     print(json.dumps(results["doctorville_wonju"], ensure_ascii=False, indent=2))
 
-    print("[4/4] HMP 캡슐 출석...")
+    print("[4/5] HMP 캡슐 출석...")
     results["hmp"] = run_script("hmp.py", extra)
     print(json.dumps(results["hmp"], ensure_ascii=False))
+
+    print("[5/5] 인터엠디 오늘의 퀴즈...")
+    results["intermd"] = run_script("intermd.py", extra)
+    print(json.dumps(results["intermd"], ensure_ascii=False))
 
     # 최종 결과 JSON 출력
     print("\n=== 최종 결과 ===")

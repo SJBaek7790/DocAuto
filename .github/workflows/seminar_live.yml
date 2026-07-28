@@ -1,12 +1,8 @@
 name: 닥터빌 라이브 세미나 자동/수동 입장
 
 on:
-  schedule:
-    # 주 트리거는 cron-job.org → workflow_dispatch API (docs/external-cron.md).
-    # 아래 schedule은 백스톱이다. GitHub 스케줄러는 지연·누락이 잦으므로 정각/30분을
-    # 피하고, 외부 트리거(:07/:37)와 겹치지 않도록 10분 뒤로 둔다.
-    - cron: '17,47 1-4 * * *'  # 점심 세미나 (KST 10:17~13:47, UTC 01:17~04:47)
-    - cron: '17,47 7-9 * * *'  # 저녁 세미나 (KST 16:17~18:47, UTC 07:17~09:47)
+  # 트리거는 cron-job.org → workflow_dispatch API 단일 경로다(docs/external-cron.md).
+  # GitHub 자체 schedule은 지연(최대 80분)·누락이 잦아 2026-07-28 제거했다.
   workflow_dispatch:
     inputs:
       account:
@@ -84,15 +80,15 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 scripts/telegram_inbox.py --fetch
 
-      - name: quiz_answers_legacy.json 커밋 및 푸시
+      - name: 인박스 결과 커밋 및 푸시
         id: commit_inbox
         continue-on-error: true
         run: |
-          if [ -n "$(git status --porcelain quiz_answers_legacy.json)" ]; then
+          if [ -n "$(git status --porcelain quiz_answers_legacy.json intermd_answer.json)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add quiz_answers_legacy.json
-            git commit -m "chore: update legacy quiz answers from telegram inbox [skip ci]"
+            git add quiz_answers_legacy.json intermd_answer.json
+            git commit -m "chore: update quiz answers from telegram inbox [skip ci]"
             git pull --rebase
             git push
           fi
@@ -116,6 +112,29 @@ jobs:
             --state-file scripts/state/seminar_entered.json \
             ${{ inputs.ignore_state && '--ignore-state' || '' }} \
             --headed
+
+      - name: 세미나 설문조사 실행
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          xvfb-run -a python3 scripts/seminar_survey.py \
+            --account ${{ inputs.account || 'all' }} \
+            --state-file scripts/state/seminar_entered.json \
+            --headed
+
+      - name: survey_answers.json 커밋 및 푸시
+        continue-on-error: true
+        run: |
+          if [ -n "$(git status --porcelain survey_answers.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add survey_answers.json
+            git commit -m "chore: collect unanswered survey questions [skip ci]"
+            git pull --rebase
+            git push
+          fi
 
       - name: 세미나 상태 캐시 저장
         uses: actions/cache/save@v4

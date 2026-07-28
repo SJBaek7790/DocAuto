@@ -1,12 +1,12 @@
 # 외부 cron 트리거 (cron-job.org → workflow_dispatch API)
 
-라이브 세미나 입장 워크플로우의 **주 트리거**. GitHub 자체 `schedule`은 공용 스케줄러
-혼잡으로 지연(최대 80분 관측)·누락이 잦아, 2026-07-25~27 기간에 기대 28회 중 3회만
-발화했다. 외부 HTTP cron이 `workflow_dispatch` API를 직접 호출하면 이 큐를 우회한다.
+라이브 세미나 입장 워크플로우의 **유일한 자동 트리거**. GitHub 자체 `schedule`은 공용
+스케줄러 혼잡으로 지연(최대 80분 관측)·누락이 잦아, 2026-07-25~27 기간에 기대 28회 중
+3회만 발화했다. 외부 HTTP cron이 `workflow_dispatch` API를 직접 호출하면 이 큐를 우회한다.
 
-워크플로우의 `schedule` 블록은 백스톱으로 남겨둔다(`:17`/`:47`, 외부 트리거보다 10분 뒤).
-중복 실행은 `scripts/state/seminar_entered.json` 상태 파일이 걸러내고, 새로 입장한 세미나가
-없으면 텔레그램도 보내지 않으므로 백스톱이 도는 것 자체는 무해하다.
+외부 cron 동작을 확인한 뒤 워크플로우의 `schedule` 블록은 **2026-07-28 제거**했다.
+cron-job.org 작업이 멈추면 라이브 세미나 입장도 함께 멈추므로, 실패 알림(Notify on
+failure)을 켜두고 PAT 만료일을 관리할 것. 급할 때는 Actions 탭에서 수동 실행한다.
 
 ---
 

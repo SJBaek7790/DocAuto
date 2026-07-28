@@ -25,8 +25,9 @@ GitHub Actions (매일 21:01 KST, cron)
        └─ python3 scripts/daily_runner.py
             ├─ [1/4] scripts/keymedi.py      (bjh7790)
             ├─ [2/4] scripts/hmp.py          (bjh7790)
-            ├─ [3/4] scripts/doctorville.py  --account bjh7790
-            ├─ [4/4] scripts/doctorville.py  --account wonju
+            ├─ [3/5] scripts/doctorville.py  --account bjh7790
+            ├─ [4/5] scripts/doctorville.py  --account wonju
+            ├─ [5/5] scripts/intermd.py      (bjh7790)
             └─ 결과 요약 → 텔레그램 전송
 ```
 
@@ -45,10 +46,10 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 
 ## 계정 범위
 
-| 계정 | 닥터빌 | 키메디 | HMP |
-|---|---|---|---|
-| `bjh7790@gmail.com` (백승진) | 출석+퀴즈+세미나 | 출석 | 캡슐 출석 |
-| `wonju1119@naver.com` (정원주, 병리과) | 출석+퀴즈+세미나 | ❌ | ❌ |
+| 계정 | 닥터빌 | 키메디 | HMP | 인터엠디 |
+|---|---|---|---|---|
+| `bjh7790@gmail.com` (백승진) | 출석+퀴즈+세미나+설문 | 출석 | 캡슐 출석 | 오늘의 퀴즈 |
+| `wonju1119@naver.com` (정원주, 병리과) | 출석+퀴즈+세미나+설문 | ❌ | ❌ | ❌ |
 
 ---
 
@@ -63,6 +64,8 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 | HMP | bjh7790 | 캡슐 출석 | 10캡슐 | `hmp.py` |
 | HMP | bjh7790 | 지식커뮤니티 댓글 | 지식내공 | `hmp.py` (내장) |
 | HMP | bjh7790 | 지식커뮤니티 글쓰기 | 지식내공 | `hmp.py` (내장) |
+| 인터엠디 | bjh7790 | 오늘의 퀴즈 | 스탬프/리워드 | `intermd.py` |
+| 닥터빌 | bjh7790, wonju | 라이브 세미나 설문 | 포인트 | `seminar_survey.py` (세미나 워크플로) |
 
 **HMP 룰렛(연속 10·20·30일) 자동화는 `hmp.py`에 구현되어 있다(2026-07-14~).** 참여 시 뜨는 확인 팝업(`.pop.cont`) 처리를 포함한 흐름은 `hmp.py` 상단 주석과 `MEMORY.md` 참조.
 
@@ -79,7 +82,8 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
     "email": "bjh7790@gmail.com",
     "doctorville": { "password": "..." },
     "keymedi":     { "id": "bjh7790", "password": "..." },
-    "hmp":         { "password": "..." }
+    "hmp":         { "password": "..." },
+    "intermd":     { "id": "bjh7790", "password": "..." }
   },
   "wonju": {
     "email": "wonju1119@naver.com",
@@ -91,6 +95,7 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 - 닥터빌 로그인 id는 계정의 `email`, 비밀번호는 `doctorville.password`.
 - 키메디는 `keymedi.id`(이메일 아님, 예: "bjh7790") + `keymedi.password`.
 - HMP는 `hmp.password`만 있으면 되고, `id`가 없으면 **계정 키 자체("bjh7790")를 로그인 id로 사용**한다.
+- 인터엠디도 HMP와 동일 규칙(`intermd.id` 생략 시 계정 키 사용). **계정 추가 후에는 GitHub `CREDENTIALS_JSON` secret도 반드시 갱신해야 CI에 반영된다.**
 
 ---
 
@@ -152,6 +157,7 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 
 무인 실행이므로 일상적으로 개입하지 않는다. Claude가 할 일:
 1. **퀴즈 정답 추가** — 텔레그램에 "정답 추가 필요" 알림이 오면 `quiz_answers.json`에 해당 제품 정답을 추가.
+1-1. **설문 답변 추가** — 세미나 설문에서 미등록 문항 알림이 오면 `survey_answers.json`의 빈 값을 채운다(스크립트가 키는 이미 넣어둔다).
 2. **실패 디버깅** — 텔레그램 실패 메시지 + Actions artifact 스크린샷을 보고 원인 진단 후 스크립트 수정.
 3. **HMP 룰렛 수동 확인 안내** — 연속 출석일수가 10의 배수에 근접하면 사용자에게 안내.
 4. 미지원 퀴즈 제품은 **시도하지 않는다** — 스크립트가 `no_answer`로 처리하고 알림을 보냄.
@@ -233,12 +239,13 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 
 ## 라이브 세미나 자동/수동 입장 (`seminar_live.py`, 2026-07-25 업데이트)
 
-- **스케줄:** 30분 간격. 주 트리거는 **외부 cron(cron-job.org) → `workflow_dispatch` API** —
+- **스케줄:** 30분 간격. 트리거는 **외부 cron(cron-job.org) → `workflow_dispatch` API 단일 경로** —
   설정값과 발급 절차는 [`docs/external-cron.md`](docs/external-cron.md) 참조.
   - 점심 세미나: KST 10:07~13:37 / 저녁 세미나: KST 16:07~18:37
-  - `.github/workflows/seminar_live.yml`의 `schedule` 블록(`17,47 1-4`·`17,47 7-9` UTC)은
-    백스톱이다. GitHub 공용 스케줄러는 지연·누락이 잦아(2026-07-25~27 기대 28회 중 3회 발화,
-    최대 80분 지연) 단독으로 신뢰할 수 없다.
+  - `.github/workflows/seminar_live.yml`의 GitHub `schedule` 블록은 **2026-07-28 제거**했다.
+    공용 스케줄러 지연·누락이 심해(2026-07-25~27 기대 28회 중 3회 발화, 최대 80분 지연)
+    백스톱으로도 값이 없었다. 외부 cron이 멈추면 입장도 멈추므로 cron-job.org의 실패 알림과
+    PAT 만료일을 관리할 것. (`daily.yml`의 21:01 KST cron은 그대로 GitHub schedule을 쓴다.)
   - Actions 탭 수동 실행(`workflow_dispatch`)도 지원.
 - 스크립트: `scripts/seminar_live.py`
 - 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아, 각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
@@ -257,6 +264,48 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 
 ---
 
+## 인터엠디 오늘의 퀴즈 (`intermd.py`, 2026-07-27~)
+
+- 실행: `daily_runner.py`의 5번째 항목. 계정은 bjh7790만.
+- 정답 소스: **`intermd_answer.json`** — `{"answer": "<정답 보기 텍스트>", "updated_at": "..."}`. 이력을 쌓지 않고 항상 최신 1건만 덮어쓴다.
+- 정답 등록: 텔레그램 봇에 `인터엠디:프로미나드`(또는 `인터엠디 프로미나드`, `인터엠디 4`) 한 줄 전송 → `telegram_inbox.py --fetch`가 파싱해 저장하고 `✅ 인터엠디 정답 → … 저장` 답장. 닥터빌 legacy 시퀀스(`에빅사 111`)보다 **먼저** 판정하므로 `인터엠디 4`처럼 숫자만 보내도 legacy 제품명으로 오인되지 않는다.
+- 매칭: 저장값이 **숫자만이면 1-based 보기 번호**(`"4"` = 네 번째 보기). 숫자가 아니면 공백 정규화 후 **부분 포함(substring)** 으로 보기와 대조하되 **유일 매칭일 때만** 선택한다(0건·2건 이상이면 `no_answer`). 완전 일치가 하나면 그것을 우선한다. 번호는 화면 렌더링 순서에 의존하므로 보기 순서가 섞이는 날에는 오답이 될 수 있다.
+- `no_answer`일 때 텔레그램 메시지에 오늘 문항·보기 전체가 포함되므로, 보기 텍스트 일부를 그대로 회신하면 된다.
+- 하루 1문항 전제. 문항이 2개 이상 감지되면 시도하지 않고 `no_answer`로 알린다.
+- **캡차:** `#captchaText`는 평소 부모 `div.fail`이 `display:none`이고 로그인 실패가 누적되면 노출된다. 노출되면 캡차를 풀지 않고 즉시 `failed`로 중단한다(수동 로그인 필요).
+
+### 셀렉터 (2026-07-27 실측)
+- 로그인: `#memberId`, `#memberPw`, `button.loginForm__btn--login` → 성공 시 `/home.do`
+- 퀴즈 진입: `a#quizBtn` → 같은 페이지에 퀴즈 레이어
+- 문항: `h2.pollSurvey__title`(앞에 `span.pollSurvey__quiz`="퀴즈" 배지), 보기: `div.pollSurvey__body span.inputbox__radio label > input[type=radio]` + `span.text`
+- 제출: `button#saveBtn` / 정답 `[data-cont="state2"]`·선물상자형 `[data-cont="state3"]` / 오답 `[data-cont="state4"]`
+- 이미 참여: `p.quizOverlap[data-cont="over"]` 가시
+
+---
+
+## 닥터빌 세미나 설문조사 (`seminar_survey.py`, 2026-07-27~)
+
+- 실행: `.github/workflows/seminar_live.yml`의 **마지막 스텝**(입장 처리 직후). 별도 스크립트라 수동 실행도 가능.
+- 대상: `scripts/state/seminar_entered.json`의 당일 `entered` 중 계정별 `survey_done`에 없는 세미나. 상태 파일이 없으면 `skipped`로 조용히 종료한다. `--seminar-id 5473`로 상태를 무시하고 특정 세미나만 처리할 수 있다.
+- 흐름: `/seminar/broadcastSeminarPopup?viewType=2&seminarId=<ID>` → `a#surveyEnter`("설문 참여") → 개인정보 동의 레이어의 `button.btn_answer:has-text("설문하기")`(항상 동의) → `survey.villeway.com` 새 창(`expect_popup`).
+- 설문 폼 DOM: `form[id^="surveyForm"]`, 문항 `li[data-question-number]`, 문항 텍스트 = `label > div`의 첫 줄(선행 `[퀴즈]` 배지·후행 `*` 포함), 보기 = `ol li label` 안의 `input[type=radio|checkbox]` + `span.col-start-2`, 제출 = `input[type=submit][value="제출하기"]`.
+- **문제은행 `survey_answers.json`** — 세미나 구분 없는 단일 파일. `{ "<정규화된 문항 텍스트>": "<보기 번호 또는 답변 텍스트>" }`. 키는 `[퀴즈]` 배지와 후행 `*`를 제거하고 공백을 정규화한 문자열.
+- **값 형식 (2026-07-27~):**
+  - 선택형: **숫자만이면 1-based 보기 번호**(`"2"` = 두 번째 보기). 숫자가 아니면 보기 텍스트 부분 포함 + 유일 매칭.
+  - 복수 선택: `"1,3"` 또는 `["1", "3"]`. 쉼표 분리는 모든 조각이 숫자일 때만 적용되므로, 쉼표가 들어간 보기 텍스트를 그대로 써도 안전하다.
+  - 주관식: 입력할 문장을 그대로.
+  - 빈 문자열은 항상 "미등록".
+- **번호 방식은 위치 기반이라 같은 문항이 다른 세미나에서 보기 순서가 바뀌면 오답이 된다.** 순서가 흔들릴 가능성이 있는 문항은 텍스트로 적어두는 편이 안전하다.
+- 미등록 알림의 보기 목록에는 입력할 번호가 붙어 나온다(`1. …`, `2. …`).
+- **미등록 문항이 1건이라도 있으면 그 페이지를 제출하지 않고 중단**(`incomplete_bank`)하고, 문항 키를 빈 값으로 `survey_answers.json`에 추가한 뒤 텔레그램으로 문항·보기를 알린다. 값만 채워 커밋하면 다음 실행에서 제출된다.
+- 설문은 **페이지 순차 제출형**이다. 뒷 페이지는 앞 페이지를 제출해야 보이므로 전체 사전 검증은 불가능하고, 페이지 단위 검증이 최대 안전선이다.
+- 한 세미나의 실패가 다른 세미나·계정 처리를 막지 않는다. 상태값: `success | incomplete_bank | no_questions | skipped | failed`.
+- **모달 처리 (2026-07-28 추가):** 임시저장된 초안이 있으면 설문 창에 headlessui 모달("알림 / 작성 중인 정보를 불러왔습니다")이 뜨고, 그 backdrop이 포인터 이벤트를 가로채 제출 버튼 클릭이 30초 타임아웃으로 실패한다. `dismiss_alerts()`가 창을 열 때·제출 직전·제출 직후에 `[role="dialog"][data-headlessui-state="open"]` 안의 확인/닫기 버튼을 눌러 닫는다. **모달 루트는 크기가 0이라 `is_visible()`이 False**이므로 존재(count) 여부로만 판정해야 한다.
+- **만족도 척도형 문항 (2026-07-28 추가):** "금일 강의 만족도" 같은 척도 문항은 보기 텍스트가 input을 감싼 label이 아니라 `label[for="<input id>"]`(별도 label)에 있어, 기존 추출로는 보기 텍스트가 전부 빈 문자열이었다. `read_questions()`가 빈 텍스트일 때 `label[for]`를 폴백으로 읽는다. 5점 척도 = 매우 만족 / 만족 / 보통 / 불만족 / 매우 불만족.
+- 제출 완료 후 방송 팝업의 `a#surveyEnter`가 사라지므로, **"이미 참여함"과 "설문 마감"이 구분되지 않고 둘 다 `no_questions`**로 보고된다.
+
+---
+
 ## 개인정보 동의 정책
 
 세미나 신청 시 "개인정보 활용 동의" 모달 → **항상 동의**(`button.btn_confirm`).
@@ -272,6 +321,8 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 | `already_done` | 오늘 이미 완료 | ☑️ |
 | `skipped` | `--task` 옵션으로 건너뜀 | ⏭️ |
 | `no_answer` | 퀴즈 정답 미등록(미시도) | ❓ |
+| `incomplete_bank` | 설문 문제은행에 미등록 문항 있음(미제출) | ❓ |
+| `no_questions` | 설문이 제공되지 않음/이미 참여 | ⏭️ |
 | `failed` | 예상치 못한 오류 | ❌ |
 
 닥터빌 결과는 `{attend, quiz, seminar}` 중첩 구조, 키메디·HMP는 flat 구조다. 스크립트가 통째로 실패하면(실행 예외·타임아웃) 중첩 키 없이 top-level `{status:"failed", message}`만 반환하며, `daily_runner.py`는 이 경우도 ❌로 정확히 표시한다.

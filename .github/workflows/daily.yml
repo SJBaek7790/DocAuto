@@ -47,15 +47,15 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 scripts/telegram_inbox.py --fetch
 
-      - name: quiz_answers_legacy.json 커밋 및 푸시
+      - name: 인박스 결과 커밋 및 푸시
         id: commit_inbox
         continue-on-error: true
         run: |
-          if [ -n "$(git status --porcelain quiz_answers_legacy.json)" ]; then
+          if [ -n "$(git status --porcelain quiz_answers_legacy.json intermd_answer.json)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add quiz_answers_legacy.json
-            git commit -m "chore: update legacy quiz answers from telegram inbox [skip ci]"
+            git add quiz_answers_legacy.json intermd_answer.json
+            git commit -m "chore: update quiz answers from telegram inbox [skip ci]"
             git pull --rebase
             git push
           fi
