@@ -18,7 +18,7 @@
 ## 실행 아키텍처
 
 ```
-GitHub Actions (매일 21:01 KST, cron)
+GitHub Actions (매일 14:00 KST, cron)
   └─ .github/workflows/daily.yml
        ├─ pip install -r requirements.txt + playwright install chromium
        ├─ secrets.CREDENTIALS_JSON → credentials.json 생성
@@ -111,7 +111,7 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 > 텔레그램 토큰/chat_id는 `CREDENTIALS_JSON` 안에도 있지만, 워크플로우는 별도 env로도 주입한다. `daily_runner.py`는 환경변수를 우선 사용하고 없으면 credentials.json에서 읽는다.
 
 ### 스케줄 / 수동 실행
-- cron: `1 12 * * *` (UTC 12:01 = KST 21:01)
+- cron: `0 5 * * *` (UTC 05:00 = KST 14:00, 2026-07-29 변경)
 - 수동 실행: Actions 탭 → "일일 의료 포털 자동화" → **Run workflow**
 - 실패 시 `scripts/logs/`의 스크린샷이 artifact로 업로드됨(7일 보관).
 
@@ -213,7 +213,8 @@ venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
 - 로그인: `input[name="memId"]`, `input[name="passwd"]`, `button.btn_login:has-text("로그인")`
 - 캡슐 버튼: 신 UI "오늘의 캡슐 받기" 텍스트 / 구 UI `#capsuleBtn`(미완료)·`#capsuleBtnComplete`(완료) — **가시성(is_visible)으로 판단**
 - 완료 팝업: `[id="10rewardPopup"]` 내부 "확인" (id가 숫자로 시작해 `[id="..."]` 속성 셀렉터 필요)
-- **댓글 (`_run_comment`):** `a[onclick*="goDetail"]` 첫 번째 → boardSeq 추출 → `knowCommBoardDetail.hm?boardSeq=XXXX` → `textarea[name="cmtCntnt"]` "감사합니다" → `form.cmtForm button[onclick*="saveCmt"]` → confirm 수락 → alert "저장 완료". already_done: `#cmtDiv .cmtName` 중 내 닉네임(`form.cmtForm span` 첫 번째) 존재 시.
+- **댓글 (`_run_comment`, 2026-07-29 수정):** `a[onclick*="goDetail"]` 전체에서 boardSeq 수집 → **번호 내림차순(최신순) 정렬 후 상위 8개를 순회** → 각 상세(`knowCommBoardDetail.hm?boardSeq=XXXX`)에서 `#cmtDiv .cmtName`에 내 닉네임(`form.cmtForm span` 첫 번째)이 있으면 **다음 후보로 넘어감** → 없으면 `textarea[name="cmtCntnt"]` "감사합니다" → `form.cmtForm button[onclick*="saveCmt"]` → confirm 수락 → alert "저장 완료". 후보를 모두 소진하면 `already_done`.
+  - **목록 첫 링크만 보면 안 된다:** 상단 3개는 고정 게시물(공지·[지식스폰서])이라 매일 동일하고 번호도 낮다(2026-07-29 실측: 2518741·2501691·2496228이 최신글 2522297 위). 예전 코드는 여기 남긴 옛 댓글을 보고 매일 `already_done`으로 끝나 실제로는 댓글을 한 건도 쓰지 않았다.
 - **글쓰기 (`_run_post`):** `button.btnWrite` → `#writePopupDiv` → `#_topicNm` 클릭(드롭다운) → `input[name="topicGbn"][value="TOPIC_13"]`(여행/취미) → `#title` "오늘도 화이팅" → `iframe#innoditor_0` body + `#innoditorSource_0` textarea에 `{요일}요일이네요. 다들 화이팅하세요.` → `#tag` "화이팅" Enter → `.botSubmit button[onclick*="saveBoard"]` → confirm → alert "게시글이 작성 완료 됐습니다.". already_done 체크 없음.
 - **GitHub Actions headed 실행:** `xvfb-run -a python3 scripts/daily_runner.py --headed` (Xvfb 가상 디스플레이 필요, workflow에서 `sudo apt-get install -y xvfb` 선행)
 
@@ -245,7 +246,7 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
   - `.github/workflows/seminar_live.yml`의 GitHub `schedule` 블록은 **2026-07-28 제거**했다.
     공용 스케줄러 지연·누락이 심해(2026-07-25~27 기대 28회 중 3회 발화, 최대 80분 지연)
     백스톱으로도 값이 없었다. 외부 cron이 멈추면 입장도 멈추므로 cron-job.org의 실패 알림과
-    PAT 만료일을 관리할 것. (`daily.yml`의 21:01 KST cron은 그대로 GitHub schedule을 쓴다.)
+    PAT 만료일을 관리할 것. (`daily.yml`의 14:00 KST cron은 그대로 GitHub schedule을 쓴다.)
   - Actions 탭 수동 실행(`workflow_dispatch`)도 지원.
 - 스크립트: `scripts/seminar_live.py`
 - 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아, 각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
@@ -273,6 +274,7 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 - `no_answer`일 때 텔레그램 메시지에 오늘 문항·보기 전체가 포함되므로, 보기 텍스트 일부를 그대로 회신하면 된다.
 - 하루 1문항 전제. 문항이 2개 이상 감지되면 시도하지 않고 `no_answer`로 알린다.
 - **캡차:** `#captchaText`는 평소 부모 `div.fail`이 `display:none`이고 로그인 실패가 누적되면 노출된다. 노출되면 캡차를 풀지 않고 즉시 `failed`로 중단한다(수동 로그인 필요).
+- **WAF 차단 (2026-07-28 발생):** GitHub Actions 러너에서 로그인 페이지가 통째로 `403 Forbidden`으로 내려왔다(같은 런에서 키메디·닥터빌·HMP는 정상, 로컬 실행도 정상 → 인터엠디만 러너 IP/헤더 기준 차단 추정). 증상은 `#memberId` 20초 타임아웃이라 셀렉터 문제로 오해하기 쉽다. 대응: 컨텍스트에 `locale="ko-KR"` + `Accept-Language` 헤더를 명시했고, `detect_block()`이 짧은 본문의 차단 문구(`403 forbidden` 등)를 잡아 `접속 차단됨(...)` 메시지로 보고한다. **헤더 조정으로 뚫릴지는 다음 CI 실행에서만 확인 가능**하고, IP 기준 차단이면 이 조치로는 해결되지 않는다.
 
 ### 셀렉터 (2026-07-27 실측)
 - 로그인: `#memberId`, `#memberPw`, `button.loginForm__btn--login` → 성공 시 `/home.do`

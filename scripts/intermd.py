@@ -85,6 +85,28 @@ def match_choice(answer: str, choices: list[str]) -> int | None:
     return hits[0] if len(hits) == 1 else None
 
 
+BLOCK_PATTERNS = ("403 forbidden", "access denied", "503 service", "접근이 거부", "비정상적인 접근")
+
+
+def detect_block(page) -> str:
+    """WAF 차단 페이지면 감지된 문구를 반환한다. 아니면 빈 문자열.
+
+    2026-07-28 GitHub Actions 실행에서 로그인 페이지가 통째로 `403 Forbidden`
+    (Apache 기본 문서)로 내려왔다. 이때 `#memberId` 대기가 20초 타임아웃으로
+    끝나 셀렉터 문제처럼 보이므로, 차단은 차단이라고 말하게 한다.
+    """
+    try:
+        body = normalize(page.inner_text("body", timeout=3000)).lower()
+    except Exception:
+        return ""
+    if len(body) > 300:  # 정상 페이지는 본문이 길다 — 차단 페이지는 한 줄짜리다.
+        return ""
+    for pat in BLOCK_PATTERNS:
+        if pat in body:
+            return pat
+    return ""
+
+
 def load_answer(path: Path) -> str:
     """intermd_answer.json에서 answer 문자열을 읽는다. 없으면 빈 문자열."""
     if not path.exists():
@@ -140,7 +162,14 @@ def run(account: str, credentials_path: Path, answer_path: Path, headless: bool 
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        # 2026-07-29: GitHub Actions에서 로그인 페이지가 403 Forbidden으로 차단됐다
+        # (러너 IP/헤더 기준 WAF 추정 — 같은 런에서 키메디·닥터빌·HMP는 정상).
+        # 한국어 로케일·Accept-Language를 명시해 최소한 헤더 기준 차단은 피한다.
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 1000},
+            locale="ko-KR",
+            extra_http_headers={"Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"},
+        )
         page = context.new_page()
         page.set_default_timeout(DEFAULT_TIMEOUT_MS)
 
@@ -156,6 +185,15 @@ def run(account: str, credentials_path: Path, answer_path: Path, headless: bool 
 
         try:
             common.goto_with_retry(page, LOGIN_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
+
+            # 차단 페이지(403/503)는 로그인 폼이 없으므로 #memberId 대기가 20초
+            # 타임아웃으로 끝난다. 원인이 셀렉터 변경으로 오해되지 않도록 먼저 본다.
+            blocked = detect_block(page)
+            if blocked:
+                result["message"] = f"접속 차단됨({blocked}) — 실행 환경 IP/헤더가 막혔을 가능성."
+                result["screenshot"] = common.save_screenshot(page, f"intermd_{account}_blocked")
+                return result
+
             page.wait_for_selector("#memberId", timeout=DEFAULT_TIMEOUT_MS)
             page.fill("#memberId", creds["id"])
             page.fill("#memberPw", creds["password"])

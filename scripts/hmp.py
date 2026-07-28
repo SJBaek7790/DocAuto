@@ -61,6 +61,9 @@ ATTENDANCE_URL = "https://www.hmp.co.kr/event/attendanceRouletteMain.hm"
 COMM_HOME_URL = "https://www.hmp.co.kr/new/knowcomm/knowCommHome.hm"
 COMM_DETAIL_URL = "https://www.hmp.co.kr/new/knowcomm/knowCommBoardDetail.hm"
 DEFAULT_TIMEOUT_MS = 15000
+# 댓글 대상 후보 수 — 목록 상단 고정 게시물(공지·[지식스폰서])에 이미 옛날 댓글이
+# 달려 있어도 그 아래 최신글까지 훑어보기 위한 여유분.
+MAX_COMMENT_CANDIDATES = 8
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
@@ -183,15 +186,43 @@ def _run_roulette(page, account: str) -> list[dict]:
     return results
 
 
+def _collect_board_seqs(page, limit: int = MAX_COMMENT_CANDIDATES) -> list[str]:
+    """목록에서 게시물 boardSeq를 모아 **최신순(번호 내림차순)** 으로 반환한다.
+
+    목록 최상단 몇 개는 고정(공지·[지식스폰서]) 게시물이라 날짜와 무관하게 항상
+    같은 자리에 있다(2026-07-29 실측: 2518741·2501691·2496228이 최신글 2522297보다
+    위에 노출). boardSeq는 증가하는 값이므로 내림차순 정렬로 실제 최신글을 앞에 둔다.
+    """
+    onclicks = page.locator('a[onclick*="goDetail"]').evaluate_all(
+        "els => els.map(e => e.getAttribute('onclick') || '')"
+    )
+    return parse_board_seqs(onclicks, limit)
+
+
+def parse_board_seqs(onclicks: list[str], limit: int = MAX_COMMENT_CANDIDATES) -> list[str]:
+    """onclick 문자열 목록에서 boardSeq를 뽑아 중복 제거 후 내림차순 정렬한다."""
+    seqs = []
+    for oc in onclicks:
+        m = re.search(r"goDetail\('(\d+)'\)", oc or "")
+        if m and m.group(1) not in seqs:
+            seqs.append(m.group(1))
+    return sorted(seqs, key=int, reverse=True)[:limit]
+
+
 def _run_comment(page, account: str) -> dict:
-    """지식커뮤니티 최상단 게시물에 '감사합니다' 댓글 작성.
+    """지식커뮤니티에서 **아직 내 댓글이 없는 최신 게시물**에 '감사합니다' 댓글 작성.
 
     흐름:
-      1. knowCommHome.hm → 첫 번째 게시물 boardSeq 추출 (onclick 속성 파싱)
-      2. knowCommBoardDetail.hm?boardSeq=XXXX → 상세 페이지 이동 (GET, 서버가 session에 저장)
-      3. #cmtDiv .cmtName 에 내 닉네임이 이미 있으면 already_done 반환
+      1. knowCommHome.hm → 게시물 boardSeq 수집 후 최신순 정렬 (onclick 속성 파싱)
+      2. 앞에서부터 knowCommBoardDetail.hm?boardSeq=XXXX 로 이동 (GET, 서버가 session에 저장)
+      3. #cmtDiv .cmtName 에 내 닉네임이 있으면 **다음 후보로 넘어간다**
       4. textarea[name="cmtCntnt"]에 '감사합니다' 입력 → 등록하기 클릭
       5. confirm 다이얼로그(지식내공 안내) 수락 → 저장 완료 alert 수신 → success 반환
+
+    버그 수정 (2026-07-29): 예전에는 목록 첫 링크 하나만 보고 내 댓글이 있으면
+    already_done으로 끝냈다. 그런데 첫 링크는 고정 게시물이라 매일 같은 글이고,
+    거기 남긴 옛날 댓글 때문에 실제로는 오늘 댓글을 하나도 안 쓰고 "작성 완료"로
+    보고했다. 이제 후보를 순회해 내 댓글이 없는 글을 찾아 실제로 작성한다.
 
     셀렉터 확인 근거 (2026-07-15, Claude in Chrome MCP로 실제 로그인 세션에서 DOM 직접 조회):
       - 목록 링크: a[onclick*="goDetail"] — onclick 값: $KnowCommHome.goDetail('XXXXXX')
@@ -212,29 +243,40 @@ def _run_comment(page, account: str) -> dict:
     """
     result: dict = {"status": "failed", "message": "", "board_seq": ""}
 
+    common.goto_with_retry(page, COMM_HOME_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS)
+    page.wait_for_timeout(2000)
+
     try:
-        # 1. 목록에서 최상단 게시물 boardSeq 추출
-        common.goto_with_retry(page, COMM_HOME_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS)
-        page.wait_for_timeout(2000)
+        page.locator('a[onclick*="goDetail"]').first.wait_for(state="visible", timeout=10000)
+    except PlaywrightTimeoutError:
+        result["message"] = "게시물 목록을 찾을 수 없음 — 셀렉터 변경 가능성."
+        result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+        return result
 
-        first_link = page.locator('a[onclick*="goDetail"]').first
-        try:
-            first_link.wait_for(state="visible", timeout=10000)
-        except PlaywrightTimeoutError:
-            result["message"] = "게시물 목록을 찾을 수 없음 — 셀렉터 변경 가능성."
-            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
-            return result
+    seqs = _collect_board_seqs(page)
+    if not seqs:
+        result["message"] = "boardSeq 추출 실패 — onclick 형식 변경 가능성."
+        result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
+        return result
 
-        onclick = first_link.get_attribute("onclick") or ""
-        m = re.search(r"goDetail\('(\d+)'\)", onclick)
-        if not m:
-            result["message"] = f"boardSeq 추출 실패 (onclick='{onclick}')."
-            result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
-            return result
+    skipped = []
+    for board_seq in seqs:
+        r = _comment_on_board(page, account, board_seq)
+        if r["status"] != "already_done":
+            return r
+        skipped.append(board_seq)
 
-        board_seq = m.group(1)
-        result["board_seq"] = board_seq
+    result["status"] = "already_done"
+    result["board_seq"] = skipped[0]
+    result["message"] = f"후보 {len(skipped)}개 게시물에 이미 모두 댓글 작성됨 (게시물 {', '.join(skipped)})."
+    return result
 
+
+def _comment_on_board(page, account: str, board_seq: str) -> dict:
+    """게시물 1건에 댓글을 작성한다. 이미 내 댓글이 있으면 already_done."""
+    result: dict = {"status": "failed", "message": "", "board_seq": board_seq}
+
+    try:
         # 2. 상세 페이지로 이동 (GET 파라미터로 접근, 서버가 세션에 boardSeq 저장)
         common.goto_with_retry(
             page, f"{COMM_DETAIL_URL}?boardSeq={board_seq}", wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS
@@ -248,12 +290,12 @@ def _run_comment(page, account: str) -> dict:
         except PlaywrightTimeoutError:
             pass
 
-        # 4. already_done 판정 — 이미 내 닉네임이 댓글 목록에 있으면 스킵
+        # 4. 이미 내 댓글이 있으면 이 게시물은 건너뛴다(호출자가 다음 후보로 넘어감)
         if my_name:
-            existing_names = page.locator("#cmtDiv .cmtName").all_inner_texts()
+            existing_names = [n.strip() for n in page.locator("#cmtDiv .cmtName").all_inner_texts()]
             if my_name in existing_names:
                 result["status"] = "already_done"
-                result["message"] = f"이미 댓글 작성 완료 (게시물 {board_seq}, 닉네임 {my_name})."
+                result["message"] = f"이미 댓글 있음 (게시물 {board_seq}, 닉네임 {my_name})."
                 return result
 
         # 5. 댓글 입력창 열기

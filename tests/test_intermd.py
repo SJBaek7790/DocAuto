@@ -1,6 +1,29 @@
 import json
 
-from intermd import load_answer, match_choice, normalize, strip_question_prefix
+from intermd import detect_block, load_answer, match_choice, normalize, strip_question_prefix
+
+
+class _FakePage:
+    def __init__(self, body):
+        self._body = body
+
+    def inner_text(self, selector, timeout=None):
+        if self._body is None:
+            raise RuntimeError("no body")
+        return self._body
+
+
+def test_detect_block_flags_403_page():
+    assert detect_block(_FakePage("403 Forbidden")) == "403 forbidden"
+
+
+def test_detect_block_ignores_normal_page():
+    assert detect_block(_FakePage("로그인 " + "x" * 400)) == ""
+    assert detect_block(_FakePage("아이디 비밀번호 로그인")) == ""
+
+
+def test_detect_block_survives_read_failure():
+    assert detect_block(_FakePage(None)) == ""
 
 
 def test_normalize_collapses_whitespace():
