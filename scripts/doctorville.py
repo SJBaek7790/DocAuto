@@ -267,7 +267,7 @@ def _do_mims_login(page, creds: dict) -> bool:
 def task_attend(page, creds: dict) -> dict:
     result = {"status": "failed", "points": 0}
 
-    page.goto(ATTEND_URL, wait_until="load")
+    common.goto_with_retry(page, ATTEND_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
     if not ensure_logged_in(page, creds):
         result["message"] = "로그인 실패"
         result["screenshot"] = save_screenshot(page, "attend_login")
@@ -275,7 +275,7 @@ def task_attend(page, creds: dict) -> dict:
 
     # 로그인 후 출석 페이지가 아니면 재이동
     if "/event/attend" not in page.url:
-        page.goto(ATTEND_URL, wait_until="load")
+        common.goto_with_retry(page, ATTEND_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
 
     # 이미 완료 여부 확인 — 오늘 날짜 버튼에 체크마크 클래스가 있는 경우
     # 버튼 텍스트 패턴: "N월 N일 출석하기"
@@ -754,7 +754,7 @@ def run(account: str, credentials_path: Path, headless: bool, tasks: list[str]) 
 
         try:
             # 최초 로그인 (출석 페이지로 이동하며 세션 확보)
-            page.goto(ATTEND_URL, wait_until="load")
+            common.goto_with_retry(page, ATTEND_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
             if not ensure_logged_in(page, creds):
                 for t in tasks:
                     output[t] = {"status": "failed", "message": "로그인 실패"}
@@ -772,6 +772,11 @@ def run(account: str, credentials_path: Path, headless: bool, tasks: list[str]) 
 
         except Exception as e:
             output["error"] = f"예외 발생: {e}"
+            # 예외로 중단된 태스크는 초기값 "skipped"로 남아 텔레그램에 ⏭️로 보고된다.
+            # 실패를 건너뜀으로 오인하지 않도록 미실행 태스크를 failed로 바꾼다.
+            for t in tasks:
+                if output.get(t, {}).get("status") == "skipped":
+                    output[t] = {"status": "failed", "message": f"예외 발생: {e}"}
             save_screenshot(page, "error")
         finally:
             browser.close()

@@ -25,9 +25,8 @@ GitHub Actions (매일 14:00 KST, cron)
        └─ python3 scripts/daily_runner.py
             ├─ [1/4] scripts/keymedi.py      (bjh7790)
             ├─ [2/4] scripts/hmp.py          (bjh7790)
-            ├─ [3/5] scripts/doctorville.py  --account bjh7790
-            ├─ [4/5] scripts/doctorville.py  --account wonju
-            ├─ [5/5] scripts/intermd.py      (bjh7790)
+            ├─ [3/4] scripts/doctorville.py  --account bjh7790
+            ├─ [4/4] scripts/doctorville.py  --account wonju
             └─ 결과 요약 → 텔레그램 전송
 ```
 
@@ -48,7 +47,7 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 
 | 계정 | 닥터빌 | 키메디 | HMP | 인터엠디 |
 |---|---|---|---|---|
-| `bjh7790@gmail.com` (백승진) | 출석+퀴즈+세미나+설문 | 출석 | 캡슐 출석 | 오늘의 퀴즈 |
+| `bjh7790@gmail.com` (백승진) | 출석+퀴즈+세미나+설문 | 출석 | 캡슐 출석 | 오늘의 퀴즈(수동) |
 | `wonju1119@naver.com` (정원주, 병리과) | 출석+퀴즈+세미나+설문 | ❌ | ❌ | ❌ |
 
 ---
@@ -64,7 +63,7 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 | HMP | bjh7790 | 캡슐 출석 | 10캡슐 | `hmp.py` |
 | HMP | bjh7790 | 지식커뮤니티 댓글 | 지식내공 | `hmp.py` (내장) |
 | HMP | bjh7790 | 지식커뮤니티 글쓰기 | 지식내공 | `hmp.py` (내장) |
-| 인터엠디 | bjh7790 | 오늘의 퀴즈 | 스탬프/리워드 | `intermd.py` |
+| ~~인터엠디~~ | bjh7790 | 오늘의 퀴즈 | 스탬프/리워드 | `intermd.py` — **daily에서 제외(2026-07-29), 수동 실행만** |
 | 닥터빌 | bjh7790, wonju | 라이브 세미나 설문 | 포인트 | `seminar_survey.py` (세미나 워크플로) |
 
 **HMP 룰렛(연속 10·20·30일) 자동화는 `hmp.py`에 구현되어 있다(2026-07-14~).** 참여 시 뜨는 확인 팝업(`.pop.cont`) 처리를 포함한 흐름은 `hmp.py` 상단 주석과 `MEMORY.md` 참조.
@@ -267,7 +266,7 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 
 ## 인터엠디 오늘의 퀴즈 (`intermd.py`, 2026-07-27~)
 
-- 실행: `daily_runner.py`의 5번째 항목. 계정은 bjh7790만.
+- 실행: **daily_runner에서 제외됨(2026-07-29). 수동 실행 전용** — `venv/bin/python3 scripts/intermd.py`. 계정은 bjh7790만.
 - 정답 소스: **`intermd_answer.json`** — `{"answer": "<정답 보기 텍스트>", "updated_at": "..."}`. 이력을 쌓지 않고 항상 최신 1건만 덮어쓴다.
 - 정답 등록: 텔레그램 봇에 `인터엠디:프로미나드`(또는 `인터엠디 프로미나드`, `인터엠디 4`) 한 줄 전송 → `telegram_inbox.py --fetch`가 파싱해 저장하고 `✅ 인터엠디 정답 → … 저장` 답장. 닥터빌 legacy 시퀀스(`에빅사 111`)보다 **먼저** 판정하므로 `인터엠디 4`처럼 숫자만 보내도 legacy 제품명으로 오인되지 않는다.
 - 매칭: 저장값이 **숫자만이면 1-based 보기 번호**(`"4"` = 네 번째 보기). 숫자가 아니면 공백 정규화 후 **부분 포함(substring)** 으로 보기와 대조하되 **유일 매칭일 때만** 선택한다(0건·2건 이상이면 `no_answer`). 완전 일치가 하나면 그것을 우선한다. 번호는 화면 렌더링 순서에 의존하므로 보기 순서가 섞이는 날에는 오답이 될 수 있다.
@@ -275,6 +274,7 @@ Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
 - 하루 1문항 전제. 문항이 2개 이상 감지되면 시도하지 않고 `no_answer`로 알린다.
 - **캡차:** `#captchaText`는 평소 부모 `div.fail`이 `display:none`이고 로그인 실패가 누적되면 노출된다. 노출되면 캡차를 풀지 않고 즉시 `failed`로 중단한다(수동 로그인 필요).
 - **WAF 차단 (2026-07-28 발생):** GitHub Actions 러너에서 로그인 페이지가 통째로 `403 Forbidden`으로 내려왔다(같은 런에서 키메디·닥터빌·HMP는 정상, 로컬 실행도 정상 → 인터엠디만 러너 IP/헤더 기준 차단 추정). 증상은 `#memberId` 20초 타임아웃이라 셀렉터 문제로 오해하기 쉽다. 대응: 컨텍스트에 `locale="ko-KR"` + `Accept-Language` 헤더를 명시했고, `detect_block()`이 짧은 본문의 차단 문구(`403 forbidden` 등)를 잡아 `접속 차단됨(...)` 메시지로 보고한다. **헤더 조정으로 뚫릴지는 다음 CI 실행에서만 확인 가능**하고, IP 기준 차단이면 이 조치로는 해결되지 않는다.
+- **IP 차단 확정 (2026-07-29):** 헤더 조치 후에도 7-28·7-29 이틀 연속 러너에서 403. 같은 시각 같은 코드·계정으로 로컬(집 IP) 실행은 정상 제출됨 → 헤더가 아니라 **Azure 데이터센터 IP 대역 차단**. 코드로 해결 불가로 판단해 daily_runner에서 제외했다. 되살리려면 셀프호스티드 러너(맥) 또는 한국 residential 프록시가 필요하다.
 
 ### 셀렉터 (2026-07-27 실측)
 - 로그인: `#memberId`, `#memberPw`, `button.loginForm__btn--login` → 성공 시 `/home.do`

@@ -218,7 +218,8 @@ def read_questions(survey_page) -> list[dict]:
         """() => Array.from(document.querySelectorAll('li[data-question-number]')).map(li => {
             const head = li.querySelector('label > div');
             const question = head ? (head.innerText || '').split('\\n')[0] : '';
-            const options = Array.from(li.querySelectorAll('input[type=radio], input[type=checkbox]')).map(inp => {
+            const qnum = li.getAttribute('data-question-number');
+            const options = Array.from(li.querySelectorAll('input[type=radio], input[type=checkbox]')).map((inp, i) => {
                 const lbl = inp.closest('label');
                 const span = lbl ? lbl.querySelector('span') : null;
                 // 만족도 척도형 문항은 보기 텍스트가 input을 감싼 label이 아니라
@@ -228,11 +229,12 @@ def read_questions(survey_page) -> list[dict]:
                     const outer = document.querySelector('label[for="' + inp.id + '"]:not(:has(input))');
                     if (outer) text = outer.innerText;
                 }
-                return { text, name: inp.name, value: inp.value, type: inp.type };
+                return { text, name: inp.name, value: inp.value, type: inp.type,
+                         id: inp.id, qnum, index: i };
             });
             const free = li.querySelector('textarea, input[type=text]');
             return {
-                number: li.getAttribute('data-question-number'),
+                number: qnum,
                 question,
                 kind: options.length ? 'choice' : (free ? 'input' : 'unknown'),
                 name: free ? free.name : (options[0] || {}).name || '',
@@ -266,15 +268,27 @@ def dismiss_alerts(survey_page, max_rounds: int = 3) -> list[str]:
     return closed
 
 
+def option_locator(survey_page, opt: dict):
+    """보기 input의 로케이터. name이 비어 있는 문항이 있어 id → name → 위치 순으로 찾는다."""
+    if opt.get("id"):
+        return survey_page.locator(f'[id="{opt["id"]}"]')
+    if opt.get("name"):
+        return survey_page.locator(
+            f'input[name="{opt["name"]}"][value="{opt["value"]}"]'
+        ).first
+    return survey_page.locator(
+        f'li[data-question-number="{opt["qnum"]}"] input[type=radio], '
+        f'li[data-question-number="{opt["qnum"]}"] input[type=checkbox]'
+    ).nth(opt["index"])
+
+
 def apply_plan(survey_page, plan: list[dict]) -> None:
     for step in plan:
         if step["kind"] == "input":
             survey_page.locator(f'[name="{step["name"]}"]').first.fill(step["value"])
             continue
         for t in step["targets"]:
-            survey_page.locator(
-                f'input[name="{t["name"]}"][value="{t["value"]}"]'
-            ).first.check(force=True)
+            option_locator(survey_page, t).check(force=True)
 
 
 def open_survey(page, seminar_id) -> tuple[object, str]:
