@@ -259,12 +259,24 @@ def _run_comment(page, account: str) -> dict:
         result["screenshot"] = common.save_screenshot(page, f"hmp_{account}_comment")
         return result
 
+    # 한 게시물의 로딩 지연·오류가 나머지 후보 시도를 막지 않도록, 실패는 기록만 하고
+    # 다음 후보로 넘어간다(2026-07-30: 상세 goto 타임아웃 1건에 댓글 작업 전체가 중단됐음).
     skipped = []
+    failures = []
     for board_seq in seqs:
         r = _comment_on_board(page, account, board_seq)
-        if r["status"] != "already_done":
-            return r
-        skipped.append(board_seq)
+        if r["status"] == "already_done":
+            skipped.append(board_seq)
+            continue
+        if r["status"] == "failed":
+            failures.append(r)
+            continue
+        return r
+
+    if failures:
+        last = failures[-1]
+        last["message"] = f"후보 {len(failures)}개 게시물 모두 실패. 마지막 오류: {last['message']}"
+        return last
 
     result["status"] = "already_done"
     result["board_seq"] = skipped[0]
@@ -278,8 +290,15 @@ def _comment_on_board(page, account: str, board_seq: str) -> dict:
 
     try:
         # 2. 상세 페이지로 이동 (GET 파라미터로 접근, 서버가 세션에 boardSeq 저장)
+        # wait_until="load"는 광고·트래커 등 서브리소스까지 기다려서 상세 페이지에서만
+        # 15초를 넘기는 일이 잦았다(2026-07-30 CI, boardSeq=2523310 3회 재시도 전부 타임아웃).
+        # 아래에서 어차피 2초 대기 + 개별 요소 wait_for로 렌더링을 기다리므로
+        # domcontentloaded로 충분하다.
         common.goto_with_retry(
-            page, f"{COMM_DETAIL_URL}?boardSeq={board_seq}", wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS
+            page,
+            f"{COMM_DETAIL_URL}?boardSeq={board_seq}",
+            wait_until="domcontentloaded",
+            timeout_ms=DEFAULT_TIMEOUT_MS,
         )
         page.wait_for_timeout(2000)  # JS 렌더링 대기 (#cmtDiv 동적 주입)
 
