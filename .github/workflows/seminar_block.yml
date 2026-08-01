@@ -3,14 +3,6 @@ name: 닥터빌 라이브 세미나 블록 실행
 on:
   workflow_dispatch:
     inputs:
-      account:
-        description: "대상 계정"
-        type: choice
-        options:
-          - all
-          - bjh7790
-          - wonju
-        default: all
       stay_seconds:
         description: "세미나 팝업 체류 시간(초)"
         type: string

@@ -21,3 +21,9 @@ def test_seminar_block_inbox_filter_and_dynamic_accounts():
     assert "scripts/seminar_live.py --account all" in block_content
     assert "scripts/seminar_survey.py --account all" in block_content
 
+def test_seminar_block_no_dead_account_input():
+    repo_root = Path(__file__).resolve().parent.parent
+    block_content = (repo_root / ".github/workflows/seminar_block.yml").read_text("utf-8")
+    assert "account:" not in block_content
+    assert "inputs.account" not in block_content
+
