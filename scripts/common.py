@@ -6,14 +6,46 @@ keymedi.py / hmp.py / doctorville.py가 공유하는 credentials 로딩·스크�
 """
 
 import json
+import os
 import time
+from datetime import timezone, timedelta
 from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+KST = timezone(timedelta(hours=9))
+RESERVED_KEYS = {"telegram"}
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 LOG_DIR = SCRIPT_DIR / "logs"
 DEFAULT_CREDENTIALS = SCRIPT_DIR.parent / "credentials.json"
+
+
+def list_accounts(creds: dict, site: str | None = None) -> list[str]:
+    """credentials.json에서 계정 리스트를 추출한다. RESERVED_KEYS 제외.
+
+    site 지정 시 해당 사이트 설정 블록이 있는 계정만 필터링한다.
+    """
+    accounts = []
+    for k, v in creds.items():
+        if k in RESERVED_KEYS or not isinstance(v, dict):
+            continue
+        if site is None or site in v:
+            accounts.append(k)
+    return accounts
+
+
+def account_label(creds: dict, account: str) -> str:
+    """계정의 라벨(예: '승진')을 반환하며, 라벨이 없으면 계정명 자체를 반환한다."""
+    if account in creds and isinstance(creds[account], dict):
+        return creds[account].get("label", account)
+    return account
+
+
+def is_recon_enabled() -> bool:
+    """환경변수 RECON="1" 설정 여부를 반환한다."""
+    return os.environ.get("RECON") == "1"
+
 
 
 def read_credentials(path: Path) -> dict:
