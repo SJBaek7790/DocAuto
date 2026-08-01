@@ -1,5 +1,5 @@
 import pytest
-from notify import SEVERITY, SEVERITY_ORDER, severity_of, should_send, build_message
+from notify import SEVERITY, SEVERITY_ORDER, severity_of, should_send, build_message, send_telegram
 
 
 def test_severity_mapping():
@@ -93,3 +93,35 @@ def test_build_message_actionable_mode():
     }
     msg_empty = build_message(quiet_results, "actionable", "2026-08-31")
     assert msg_empty == ""
+
+
+def test_notify_empty_env_level_fallback():
+    quiet_results = {"keymedi": {"status": "already_done"}}
+    assert should_send(quiet_results, "") is True
+    assert should_send(quiet_results, "  ") is True
+    assert should_send(quiet_results, "invalid_level") is True
+
+
+def test_build_message_actionable_preserves_questions_payload():
+    results = {
+        "doctorville_bjh7790": {
+            "quiz": {
+                "status": "no_answer",
+                "product": "우루사",
+                "message": "정답 미등록\n두번째 줄 메세지",
+                "questions": [{"q": "Q1: 질문 내용 첫번째 줄\n질문 내용 두번째 줄", "options": ["A", "B"]}],
+            }
+        }
+    }
+    msg = build_message(results, "actionable", "2026-08-31")
+    assert "우루사" in msg
+    assert "Q1: 질문 내용 첫번째 줄" in msg
+    assert "질문 내용 두번째 줄" in msg
+    assert "options" in msg
+    assert "[\n  {\n" in msg  # verifies indent=2 formatted JSON output
+
+
+def test_send_telegram_empty_text_returns_true():
+    assert send_telegram("") is True
+    assert send_telegram(None) is True
+

@@ -62,9 +62,12 @@ def severity_of(val) -> str:
 
 def should_send(results: dict, level: str) -> bool:
     """Determine whether notification should be sent based on level setting."""
-    if level == "all":
+    lvl = (level or "all").strip().lower()
+    if lvl not in ("all", "actionable"):
+        lvl = "all"
+    if lvl == "all":
         return True
-    if level == "actionable":
+    if lvl == "actionable":
         sev = severity_of(results)
         return SEVERITY_ORDER.get(sev, 0) >= SEVERITY_ORDER["action"]
     return True
@@ -146,10 +149,12 @@ def _format_actionable_summary(results: dict, date_str: str) -> str:
                     if status == "incomplete_bank":
                         lines.append("  → survey_answers.json 빈 값 추가")
                     if "questions" in data:
-                        lines.append(f"  {json.dumps(data['questions'], ensure_ascii=False)}")
+                        lines.append(json.dumps(data["questions"], ensure_ascii=False, indent=2))
+                    if "options" in data:
+                        lines.append(json.dumps(data["options"], ensure_ascii=False, indent=2))
 
             for k, v in data.items():
-                if k in ("status", "message", "product", "verified_by", "points", "questions"):
+                if k in ("status", "message", "product", "verified_by", "points", "questions", "options"):
                     continue
                 if isinstance(v, (dict, list)):
                     sub_prefix = f"{prefix} > {k}" if prefix else k
@@ -165,9 +170,12 @@ def _format_actionable_summary(results: dict, date_str: str) -> str:
 
 def build_message(results: dict, level: str, date_str: str) -> str:
     """Build summary message in specified level format."""
-    if level == "all":
+    lvl = (level or "all").strip().lower()
+    if lvl not in ("all", "actionable"):
+        lvl = "all"
+    if lvl == "all":
         return _format_all_summary(results, date_str)
-    elif level == "actionable":
+    elif lvl == "actionable":
         return _format_actionable_summary(results, date_str)
     return _format_all_summary(results, date_str)
 
