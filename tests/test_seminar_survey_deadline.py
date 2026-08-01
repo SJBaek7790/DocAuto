@@ -1,6 +1,14 @@
 from datetime import datetime
+import json
 from common import KST
-from seminar_survey import evaluate_survey_cutoff, get_survey_cutoff, run_survey, mark_survey_status
+import seminar_live
+from seminar_survey import (
+    evaluate_survey_cutoff,
+    get_survey_cutoff,
+    run_survey,
+    run_survey_for_item,
+    mark_survey_status,
+)
 
 
 def test_evaluate_survey_cutoff_before_deadline():
@@ -78,12 +86,42 @@ def test_naive_datetime_conversion():
     assert evaluate_survey_cutoff(item, naive_after) == "closed"
 
 
-def test_incomplete_bank_message_includes_title(tmp_path, monkeypatch):
+def test_run_survey_cutoff_closed_and_state_update(tmp_path):
+    state_file = tmp_path / "seminar_entered.json"
+    state = {
+        "version": 2,
+        "date": "2026-08-10",
+        "accounts": {
+            "bjh7790": {
+                "entered": [
+                    {
+                        "id": 5473,
+                        "title": "호흡기 심포지엄",
+                        "start": "2026-08-10(월) 13:00 ~ 14:00",
+                        "entered_at": "2026-08-10T13:05:00+09:00",
+                    }
+                ],
+                "survey": {},
+            }
+        },
+    }
+    state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    item = state["accounts"]["bjh7790"]["entered"][0]
+    now_past = datetime(2026, 8, 10, 16, 0, tzinfo=KST)
+
+    res = run_survey_for_item(None, item, now_dt=now_past, state=state, state_file=state_file, account="bjh7790")
+    assert res["status"] == "closed"
+
+    loaded = seminar_live.load_state(state_file, "2026-08-10")
+    assert loaded["accounts"]["bjh7790"]["survey"]["5473"] == "closed"
+
+
+def test_incomplete_bank_message_includes_title(tmp_path):
     from seminar_survey import resolve_page, add_missing_to_bank
 
     bank_file = tmp_path / "survey_answers.json"
 
-    # Simulate missing survey answer
     questions = [
         {
             "question": "[퀴즈] 새로운 문항",
@@ -97,7 +135,7 @@ def test_incomplete_bank_message_includes_title(tmp_path, monkeypatch):
 
     item = {
         "id": 5473,
-        "title": "Breathe Well Symposium (호흡기)",
+        "title": "호흡기 심포지엄",
         "start": "2026-08-10(월) 13:00 ~ 14:00",
     }
 
@@ -108,7 +146,7 @@ def test_incomplete_bank_message_includes_title(tmp_path, monkeypatch):
         f"{prefix}{pages_done + 1}페이지에 미등록 문항 {len(missing)}건 — 제출하지 않음"
         f"(survey_answers.json에 {added}건 빈 값 추가)."
     )
-    assert "Breathe Well Symposium (호흡기)" in msg
+    assert "호흡기 심포지엄" in msg
 
 
 def test_mark_survey_status_closed():
@@ -117,9 +155,10 @@ def test_mark_survey_status_closed():
         "accounts": {
             "bjh7790": {
                 "entered": [{"id": 5473, "title": "Test"}],
-                "survey": {}
+                "survey": {},
             }
-        }
+        },
     }
     mark_survey_status(state, "bjh7790", 5473, "closed")
     assert state["accounts"]["bjh7790"]["survey"]["5473"] == "closed"
+

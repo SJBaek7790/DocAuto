@@ -51,6 +51,7 @@ import doctorville
 import seminar_live
 from seminar_live import parse_dd_date, upgrade_to_v2
 import daily_runner
+import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_TIMEOUT_MS = doctorville.DEFAULT_TIMEOUT_MS
@@ -402,8 +403,20 @@ def open_survey(page, seminar_id) -> tuple[object, str]:
     return survey_page, ""
 
 
-def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> dict:
+def run_survey(
+    page,
+    item_or_id,
+    bank_path: Path = DEFAULT_BANK_FILE,
+    now_dt: datetime = None,
+    now_kst: datetime = None,
+    state: dict = None,
+    state_file: Path = None,
+    account: str = None,
+) -> dict:
     """세미나 1건의 설문을 처리한다."""
+    if now_dt is None:
+        now_dt = now_kst
+
     if isinstance(item_or_id, dict):
         item = item_or_id
         seminar_id = item.get("id")
@@ -417,10 +430,21 @@ def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> di
     if title:
         result["title"] = title
 
+    if page is None:
+        st = evaluate_survey_cutoff(item, now_dt)
+        result["status"] = st
+        if st == "closed" and state is not None and account:
+            mark_survey_status(state, account, sid_val, "closed", state_file)
+        prefix = f"[{title}] " if title else ""
+        result["message"] = f"{prefix}{st}: page is None"
+        return result
+
     survey_page, err = open_survey(page, seminar_id)
     if survey_page is None:
         st = evaluate_survey_cutoff(item, now_dt)
         result["status"] = st
+        if st == "closed" and state is not None and account:
+            mark_survey_status(state, account, sid_val, "closed", state_file)
         prefix = f"[{title}] " if title else ""
         result["message"] = f"{prefix}{st}: {err}"
         return result
@@ -449,6 +473,8 @@ def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> di
                 else:
                     st = evaluate_survey_cutoff(item, now_dt)
                     result["status"] = st
+                    if st == "closed" and state is not None and account:
+                        mark_survey_status(state, account, sid_val, "closed", state_file)
                     prefix = f"[{title}] " if title else ""
                     result["message"] = f"{prefix}{st}: 설문 창에 문항이 없음."
                 return result
@@ -509,7 +535,6 @@ def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> di
                 except Exception:
                     pass
 
-
             if completion_verified:
                 result["status"] = "success"
                 result["verified_by"] = "completion_screen_verified"
@@ -531,6 +556,9 @@ def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> di
                 survey_page.close()
         except Exception:
             pass
+
+
+run_survey_for_item = run_survey
 
 
 def run_account(
@@ -569,10 +597,9 @@ def run_account(
                 return output
 
             for sid in seminar_ids:
-                # 한 세미나의 실패가 나머지를 막지 않도록 개별적으로 감싼다.
                 try:
                     item = get_entered_item(state, account, sid)
-                    r = run_survey(page, item, bank_path)
+                    r = run_survey(page, item, bank_path, state=state, state_file=state_file, account=account)
                 except Exception as e:
                     r = {"seminarId": int(sid) if str(sid).isdigit() else sid, "status": "failed", "message": f"예외 발생: {e}"}
                 output["surveys"].append(r)
@@ -637,7 +664,7 @@ def format_telegram_message(results: dict, date_str: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="닥터빌 세미나 설문조사 자동 응답")
-    parser.add_argument("--account", default="all", choices=["all", "bjh7790", "wonju"])
+    parser.add_argument("--account", default="all", help="계정 ID (all 지정 시 전체 계정)")
     parser.add_argument("--credentials", default=str(SCRIPT_DIR.parent / "credentials.json"))
     parser.add_argument("--bank-file", default=str(DEFAULT_BANK_FILE), help="survey_answers.json 경로")
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE), help="seminar_entered.json 경로")
@@ -648,7 +675,8 @@ def main():
 
     kst = timezone(timedelta(hours=9))
     date_str = datetime.now(kst).strftime("%Y-%m-%d")
-    accounts = ["bjh7790", "wonju"] if args.account == "all" else [args.account]
+    creds = common.read_credentials(Path(args.credentials))
+    accounts = common.list_accounts(creds, "doctorville") if args.account == "all" else [args.account]
 
     state = None
     state_file = None
@@ -681,11 +709,16 @@ def main():
 
     if not args.no_telegram and any(r.get("surveys") for r in results.values()):
         daily_runner.load_telegram_credentials(args.credentials)
-        ok = daily_runner.send_telegram(format_telegram_message(results, date_str))
-        print(f"[telegram] {'성공' if ok else '실패'}")
+        notify_level = os.environ.get("NOTIFY_LEVEL", "all")
+        if notify.should_send(results, notify_level):
+            msg = notify.build_message(results, notify_level, date_str)
+            if msg:
+                ok = notify.send_telegram(msg)
+                print(f"[telegram] {'성공' if ok else '실패'}")
 
     sys.exit(1 if any(r.get("status") == "failed" for r in results.values()) else 0)
 
 
 if __name__ == "__main__":
     main()
+
