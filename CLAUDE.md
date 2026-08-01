@@ -1,45 +1,43 @@
 # CLAUDE.md
 
-이 파일은 Claude Code(claude.ai/code)가 이 저장소에서 작업할 때 참고하는 가이드다.
+의료 포털(닥터빌·키메디·HMP·인터엠디) 일일 자동화. Playwright(Chromium) + GitHub Actions 무인 실행 + 텔레그램 요약.
 
-## 프로젝트 개요
+상세 지식(셀렉터, 버그 이력, 설계 근거, 외부 cron 설정)은 전부 [MEMORY.md](MEMORY.md)에 있다. 이 파일은 규칙과 포인터만 유지한다.
 
-의료 포털(닥터빌·키메디·HMP) 일일 자동화 루틴.
-- 출석체크 / 오늘의 퀴즈 / 세미나 신청을 매일 자동 처리
-- **GitHub Actions cron으로 무인 실행** (`.github/workflows/daily.yml` → `scripts/daily_runner.py`)
-- 모든 사이트를 Playwright(헤드리스 Chromium) 스크립트로 조작 — 더 이상 브라우저 MCP나 로컬 수동 실행에 의존하지 않는다
-- 실행 결과는 텔레그램 봇으로 요약 전송
-- 작업 중 새로 알게 된 사항은 `MEMORY.md`에 기록
+---
 
-> **아키텍처 전환 (2026-07-14):** 과거에는 Claude in Chrome MCP / Desktop Commander로 반자동 실행했으나, 현재는 GitHub Actions에서 완전 무인 실행한다. 과거 방식 기록은 이 문서 맨 아래 "과거 실행 방식(이력용)"과 `MEMORY.md`에 남겨두었다.
+## 모듈 목록
+
+| # | 모듈 | 스크립트 | 상태 |
+|---|---|---|---|
+| 1 | 익일 닥터빌 퀴즈 사전 확인 | `doctorville.py --task precheck_quiz` | 운영 |
+| 2 | 닥터빌 퀴즈 답변 입력 | `doctorville.py --task quiz` | 운영 |
+| 3 | 닥터빌 출석 | `doctorville.py --task attend` | 운영 |
+| 4 | 닥터빌 세미나 신청 | `doctorville.py --task seminar` | 운영 |
+| 5 | 키메디 출석 | `keymedi.py` | 운영 |
+| 6 | HMP 캡슐 출석 | `hmp.py` | 운영 |
+| 7 | HMP 룰렛(연속 10·20·30일에만 활성) | `hmp.py` 내장 | 운영 |
+| 8 | HMP 지식커뮤니티 댓글 | `hmp.py` 내장 | 운영 |
+| 9 | HMP 지식커뮤니티 글쓰기 | `hmp.py` 내장 | 운영 |
+| 10 | 닥터빌 세미나 입장(방송 중) | `seminar_live.py` | 운영 |
+| 11 | 닥터빌 세미나 설문(종료 후) | `seminar_survey.py` | 운영 |
+| 12 | 텔레그램 정답 수신·반영 | `telegram_inbox.py` | 운영 |
+| — | 인터엠디 오늘의 퀴즈 | `intermd.py` | **수동 전용**(러너 IP 403) |
 
 ---
 
 ## 실행 아키텍처
 
-```
-GitHub Actions (매일 14:00 KST, cron)
-  └─ .github/workflows/daily.yml
-       ├─ pip install -r requirements.txt + playwright install chromium
-       ├─ secrets.CREDENTIALS_JSON → credentials.json 생성
-       └─ python3 scripts/daily_runner.py
-            ├─ [1/4] scripts/keymedi.py      (bjh7790)
-            ├─ [2/4] scripts/hmp.py          (bjh7790)
-            ├─ [3/4] scripts/doctorville.py  --account bjh7790
-            ├─ [4/4] scripts/doctorville.py  --account wonju
-            └─ 결과 요약 → 텔레그램 전송
-```
+| 워크플로우 | 트리거 | 실행 순서 |
+|---|---|---|
+| `daily.yml` | cron-job.org 15:00 KST (주) + GitHub cron `0 7 * * *` (16:00 KST 백스톱) | ① inbox fetch → ② 닥터빌(출석·퀴즈) → ③ 키메디 → ④ HMP(캡슐·룰렛·댓글·글쓰기) → ⑤ 익일 퀴즈 사전 확인 (`daily_runner.py`) → 정답 커밋 |
+| `seminar_block.yml` | cron-job.org → `workflow_dispatch` (11:00~14:30, 17:00~21:30 KST 30분 간격) | ① inbox fetch (11:00 KST 런만) → ② 닥터빌 세미나 신청 (`doctorville.py --task seminar`) → ③ 라이브 세미나 입장 (`seminar_live.py`) → ④ 세미나 설문 (`seminar_survey.py`) |
 
-- 각 사이트 스크립트는 결과를 **한 줄(또는 indent) JSON**으로 stdout에 출력한다.
-- `daily_runner.py`가 이를 파싱해 취합하고 텔레그램 메시지로 포맷한다.
-- 서브프로세스는 `sys.executable`(현재 인터프리터)로 실행 — 로컬 venv·CI 전역 pip 양쪽에서 동일하게 동작한다. **venv 절대경로를 하드코딩하지 않는다.**
-- 실패 항목이 하나라도 있으면 `daily_runner.py`는 exit 1로 종료(Actions job 실패 표시), 텔레그램 전송은 성공/실패와 무관하게 항상 수행된다.
-
-### 공용 모듈 `scripts/common.py`
-keymedi/hmp/doctorville가 공유하는 헬퍼:
-- `read_credentials(path)` — credentials.json 로드
-- `save_screenshot(page, name_stem)` — 실패 시 `scripts/logs/`에 스크린샷 저장
-- `form_login(page, id_sel, pw_sel, submit_sel, id, pw, timeout)` — keymedi/hmp 공통 폼 로그인 (폼 가시성으로 판단, 제출 후 폼이 hidden 될 때까지 대기)
+- 중앙 알림 게이트(`scripts/notify.py`)가 `NOTIFY_LEVEL` 환경변수 (`actionable` default / `all`)에 따라 알림 여부를 결정한다.
+- 각 스크립트는 결과 JSON 1건을 stdout에 출력, `daily_runner.py` 및 알림 게이트가 파싱·취합·전송.
+- 서브프로세스는 `sys.executable`로 호출. **venv 절대경로 하드코딩 금지.**
+- 실패 1건이라도 있으면 exit 1.
+- CI는 `xvfb-run -a ... --headed`로 실행(헤드리스 실패 이력).
 
 ---
 
@@ -47,301 +45,78 @@ keymedi/hmp/doctorville가 공유하는 헬퍼:
 
 | 계정 | 닥터빌 | 키메디 | HMP | 인터엠디 |
 |---|---|---|---|---|
-| `bjh7790@gmail.com` (백승진) | 출석+퀴즈+세미나+설문 | 출석 | 캡슐 출석 | 오늘의 퀴즈(수동) |
-| `wonju1119@naver.com` (정원주, 병리과) | 출석+퀴즈+세미나+설문 | ❌ | ❌ | ❌ |
+| `bjh7790@gmail.com` (백승진) | 출석·퀴즈·세미나·설문 | 출석 | 캡슐·룰렛·댓글·글쓰기 | 퀴즈(수동) |
+| `wonju1119@naver.com` (정원주) | 출석·퀴즈·세미나·설문 | ❌ | ❌ | ❌ |
 
 ---
 
-## 일일 자동화 항목
+## 파일 맵
 
-| 사이트 | 계정 | 작업 | 포인트 | 스크립트 |
-|---|---|---|---|---|
-| 닥터빌 | bjh7790, wonju | 출석체크 | 100P | `doctorville.py --task attend` |
-| 닥터빌 | bjh7790, wonju | 오늘의 퀴즈 | 500P | `doctorville.py --task quiz` |
-| 닥터빌 | bjh7790, wonju | 세미나 신청 | — | `doctorville.py --task seminar` |
-| 키메디 | bjh7790 | 출석 | 100P | `keymedi.py` |
-| HMP | bjh7790 | 캡슐 출석 | 10캡슐 | `hmp.py` |
-| HMP | bjh7790 | 지식커뮤니티 댓글 | 지식내공 | `hmp.py` (내장) |
-| HMP | bjh7790 | 지식커뮤니티 글쓰기 | 지식내공 | `hmp.py` (내장) |
-| ~~인터엠디~~ | bjh7790 | 오늘의 퀴즈 | 스탬프/리워드 | `intermd.py` — **daily에서 제외(2026-07-29), 수동 실행만** |
-| 닥터빌 | bjh7790, wonju | 라이브 세미나 설문 | 포인트 | `seminar_survey.py` (세미나 워크플로) |
-
-**HMP 룰렛(연속 10·20·30일) 자동화는 `hmp.py`에 구현되어 있다(2026-07-14~).** 참여 시 뜨는 확인 팝업(`.pop.cont`) 처리를 포함한 흐름은 `hmp.py` 상단 주석과 `MEMORY.md` 참조.
-
----
-
-## credentials.json 형식
-
-로컬 전용, gitignore 대상. GitHub Actions에서는 `CREDENTIALS_JSON` secret으로 주입한다.
-
-```json
-{
-  "telegram": { "bot_token": "...", "chat_id": "..." },
-  "bjh7790": {
-    "email": "bjh7790@gmail.com",
-    "doctorville": { "password": "..." },
-    "keymedi":     { "id": "bjh7790", "password": "..." },
-    "hmp":         { "password": "..." },
-    "intermd":     { "id": "bjh7790", "password": "..." }
-  },
-  "wonju": {
-    "email": "wonju1119@naver.com",
-    "doctorville": { "password": "..." }
-  }
-}
-```
-
-- 닥터빌 로그인 id는 계정의 `email`, 비밀번호는 `doctorville.password`.
-- 키메디는 `keymedi.id`(이메일 아님, 예: "bjh7790") + `keymedi.password`.
-- HMP는 `hmp.password`만 있으면 되고, `id`가 없으면 **계정 키 자체("bjh7790")를 로그인 id로 사용**한다.
-- 인터엠디도 HMP와 동일 규칙(`intermd.id` 생략 시 계정 키 사용). **계정 추가 후에는 GitHub `CREDENTIALS_JSON` secret도 반드시 갱신해야 CI에 반영된다.**
-
----
-
-## GitHub Actions 배포
-
-### Secrets (Repo → Settings → Secrets → Actions)
-| Secret | 내용 |
+| 파일 | 역할 |
 |---|---|
-| `CREDENTIALS_JSON` | `credentials.json` 전체 내용(JSON string) |
-| `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 |
-| `TELEGRAM_CHAT_ID` | 수신 chat id |
+| `scripts/common.py` | `read_credentials` / `list_accounts` / `account_label` / `is_recon_enabled` / `save_screenshot` / `goto_with_retry` |
+| `scripts/notify.py` | 중앙 알림 게이트 (severity 판정, messaging, Telegram 전송) |
+| `scripts/recon.py` | 정찰 스크립트 (CLI R3/R4, RECON=1 환경변수 R1/R2) |
+| `scripts/daily_runner.py` | daily 워크플로우 오케스트레이터 + 알림 필터링 |
+| `quiz_answers.json` | 닥터빌 퀴즈 문제은행 `{제품명: {문항텍스트: 정답보기텍스트}}` |
+| `quiz_answers_legacy.json` | 구형식 폴백 `{제품명: "111"}` (보기 번호 시퀀스 문자열) |
+| `intermd_answer.json` | 인터엠디 최신 정답 1건 `{answer, updated_at}` (덮어쓰기) |
+| `survey_answers.json` | 설문 문제은행 `{문항텍스트: 답변}` (세미나 무관 단일 파일) |
+| `scripts/state/seminar_entered.json` | 세미나 입장·설문 이력 (State v2 schema, Actions cache 유지) |
+| `credentials.json` | 로컬 전용(gitignore). CI는 `CREDENTIALS_JSON` secret |
+| `scripts/logs/` | 실패 스크린샷 (artifact 7일 보관) |
 
-> 텔레그램 토큰/chat_id는 `CREDENTIALS_JSON` 안에도 있지만, 워크플로우는 별도 env로도 주입한다. `daily_runner.py`는 환경변수를 우선 사용하고 없으면 credentials.json에서 읽는다.
-
-### 스케줄 / 수동 실행
-- cron: `0 5 * * *` (UTC 05:00 = KST 14:00, 2026-07-29 변경)
-- 수동 실행: Actions 탭 → "일일 의료 포털 자동화" → **Run workflow**
-- 실패 시 `scripts/logs/`의 스크린샷이 artifact로 업로드됨(7일 보관).
-
----
-
-## 로컬 실행 (디버깅)
-
-macOS Homebrew Python은 PEP 668로 전역 pip 설치를 막으므로 venv 사용:
-
-```bash
-cd ~/Desktop/DocAuto
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-pip install -r requirements-dev.txt   # 테스트 의존성 (pytest)
-playwright install chromium
-deactivate
-```
-
-이후 실행 (venv python 절대경로 직접 호출):
-```bash
-# 단위 테스트 실행
-python3 -m pytest
-# 또는
-venv/bin/pytest
-
-# 전체 루틴 (텔레그램 전송 포함)
-venv/bin/python3 scripts/daily_runner.py
-venv/bin/python3 scripts/daily_runner.py --no-telegram   # 전송 생략
-venv/bin/python3 scripts/daily_runner.py --headed        # 브라우저 창 표시
-
-# 개별 사이트
-venv/bin/python3 scripts/keymedi.py --headed
-venv/bin/python3 scripts/hmp.py --headed
-venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
-```
-
-첫 실행이나 셀렉터 변경 의심 시 반드시 `--headed`로 눈으로 확인할 것.
+Secrets: `CREDENTIALS_JSON`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+credentials 스키마·계정별 id 규칙 → [MEMORY.md](MEMORY.md) "credentials 스키마".
 
 ---
 
 ## Claude의 역할
 
-무인 실행이므로 일상적으로 개입하지 않는다. Claude가 할 일:
-1. **퀴즈 정답 추가** — 텔레그램에 "정답 추가 필요" 알림이 오면 `quiz_answers.json`에 해당 제품 정답을 추가.
-1-1. **설문 답변 추가** — 세미나 설문에서 미등록 문항 알림이 오면 `survey_answers.json`의 빈 값을 채운다(스크립트가 키는 이미 넣어둔다).
-2. **실패 디버깅** — 텔레그램 실패 메시지 + Actions artifact 스크린샷을 보고 원인 진단 후 스크립트 수정.
-3. **HMP 룰렛 수동 확인 안내** — 연속 출석일수가 10의 배수에 근접하면 사용자에게 안내.
-4. 미지원 퀴즈 제품은 **시도하지 않는다** — 스크립트가 `no_answer`로 처리하고 알림을 보냄.
+무인 실행이므로 일상 개입 없음. 개입 조건은 텔레그램 알림뿐이다.
+
+1. `no_answer` 알림 → 알림에 포함된 문항·보기 JSON을 그대로 `quiz_answers.json`에 채운다.
+2. `incomplete_bank` 알림 → `survey_answers.json`의 빈 값을 채운다(키는 스크립트가 이미 생성).
+3. `failed` / `unverified` 알림 → 텔레그램 메시지보다 **Actions artifact 스크린샷을 먼저** 본다(`gh run download <run-id>`).
+4. 연속 출석일이 10의 배수에 근접하면 룰렛 안내.
+
+### 금지
+- 정답을 추측해 제출하지 않는다. 미등록이면 미시도(`no_answer` / `incomplete_bank`).
+- 자동화가 막힌 항목을 "완료"로 표기하지 않는다.
+- 비밀번호·토큰을 코드나 문서에 남기지 않는다.
 
 ---
 
-## 퀴즈 정답 형식 (문제은행 방식, 2026-07-19~)
+## 상태값 및 Severity (JSON status)
 
-파일: `quiz_answers.json`
+| Severity | status | 의미 | 텔레그램 (`actionable`) |
+|---|---|---|---|
+| `alert` | `failed`, `blocked`, `unverified` | 오류 / 긍정 증거 미비 강등 | ❌ / ⚠️ |
+| `action` | `no_answer`, `incomplete_bank` | 정답/설문 미등록 (사용자 개입 필요) | ❓ |
+| `ok` | `success` (verified) | 성공 및 긍정 증거 확인 완료 | 전송 안 함 |
+| `quiet` | `already_done`, `skipped`, `no_target`, `not_ready`, `closed` | 완료/건너뜀/대상없음/마감 | 전송 안 함 |
 
-```json
-{
-  "우루사": {
-    "담석 예방 목적으로 체중 감소 중 우루사(UDCA)를 처방할 수 있는 근거로 적절한 것은?": "UDCA는 담즙 내 콜레스테롤 농도를 낮춰 담석 생성을 억제한다.",
-    "다음 중 체중감소로 인한 담석 생성 예방을 위한 우루사(UDCA) 사용 권고 용량으로 가장 적절한 것은?": "300mg 하루 2회"
-  },
-  "제품명": {}
-}
+---
+
+## 로컬 실행 (디버깅)
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt && playwright install chromium && deactivate
 ```
 
-- **이전 방식(보기 번호 시퀀스 문자열, 예: `"111"`)은 폐기됨(2026-07-19).** 같은 제품이라도 날짜마다 문항 수·순서가 다르고, "커뮤니티에 정답 공유 시 패널티" 경고로 보아 보기 순서도 사용자별로 섞일 가능성이 높아 위치 기반 매칭은 근본적으로 안전하지 않음.
-- 정답은 **문항 텍스트 → 정답 보기 텍스트**의 문제은행(dict)으로 저장한다. 위치(Q1/Q2/…)나 보기 번호에 의존하지 않고, 실행 시점에 화면에 렌더링된 문항·보기 텍스트를 그대로 조회해 매칭한다.
-- 문항 텍스트는 `.txt_question`, 보기 텍스트는 `.question_choice label`에서 추출(공백 정규화 후 비교).
-- 제품이 없거나, 제품은 있으나 오늘 문항의 텍스트가 은행에 없거나, 기록된 정답 텍스트가 오늘 보기 중 어느 것과도 일치하지 않으면 → 시도 금지 + `no_answer` 반환. 이때 텔레그램 알림 메시지에 **오늘 실제 문항/보기 텍스트 전체가 JSON으로 포함**되므로, 그대로 복사해 `quiz_answers.json`에 정답만 채워 넣으면 된다.
-- O/X 문항도 동일 원칙: 저장값은 실제 보기 라벨 텍스트("O"/"X" 등 화면 표기 그대로).
-- pId·문항수는 매일 바뀌므로 "오늘의 퀴즈" 카드 → 제품 상세 경로로 동적 탐색
-- **탐색 경로(2026-07-20 수정):** `/product/main` → 이달의 퀴즈 캘린더(`.quiz_calender`) → 오늘 날짜 다음 줄에서 제품명 추출 + 오늘 셀(`td.today`) 내 hidden input `.pIdCls`에서 pId 직접 추출 → 상세(`/product/productView?pId=XXX`). **`/product/medicineList`에서 이름으로 검색하던 이전 방식은 폐기.** medicineList는 의약품 전용 목록이라 모비케어 같은 의료기기(`/product/instrumentList` 카테고리)는 등록돼 있지 않아 pId 조회 실패 → 퀴즈 시도 자체가 안 됨(`failed: medicineList에서 pId를 찾지 못함`). 캘린더 셀의 `pIdCls`는 카테고리와 무관하게 항상 존재해 더 안정적. medicineList 검색은 폴백으로만 유지.
-- 퀴즈 레이어 DOM(`.question_area` 반복 구조, 2026-07-19 확인): 문항당 `<span class="questionN">QN</span><p class="txt_question">...</p><ul class="question_choice"><li><input name="an_N" value="V"><label>보기텍스트</label></li>...</ul>`, 실제 문항 수는 hidden input `#questionCnt`로도 확인 가능.
-- **구형식 보기 번호 폴백 (`quiz_answers_legacy.json`, 2026-07-25~):** 문제은행(`quiz_answers.json`)에 없거나 매칭 실패 시 `quiz_answers_legacy.json` (`{ "에빅사": "111" }` 문자열 포맷, 리스트 `["1", "2", "3"]` 사용 안 함) 폴백을 사용하여 보기 번호 순서 기반 시도를 보완 수행.
-- **텔레그램 인박스 파싱 (`scripts/telegram_inbox.py`):** 텔레그램 봇 채팅으로 `에빅사 111` 또는 `[제품명] [정답시퀀스]` 형식 메시지를 전송하면 `telegram_inbox.py --fetch`가 메시지를 파싱해 `quiz_answers_legacy.json`에 저장. 문제은행에 없는 신규 제품명은 경고 문구와 함께 등록(`⚠️ 신제품 → 111 저장 (신제품은(는) quiz_answers.json에 없는 제품명 — 오타 확인)`). 워크플로우 3단계(`--fetch` → git commit `chore: update legacy quiz answers from telegram inbox [skip ci]` → `--confirm-offset`)로 안전하게 처리됨.
-- **오답 삭제 (Bank & Legacy Eviction):** 퀴즈 제출 후 `:text('오답입니다')` 오답 팝업 감지 시, 해당 키를 `quiz_answers.json` 문제은행과 `quiz_answers_legacy.json` 구형식 정답 양쪽에서 모두 자동 삭제(eviction)하여 다음 실행 시 오답 재시도를 방지함. 사후 커밋 스텝이 두 파일 모두 커밋하여 CI 간 이력을 보존함.
-- **정답 자동 학습:** 퀴즈 제출 성공 시 화면에 표시된 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 저장하고 GitHub Actions 완료 시 자동 커밋(`chore: update quiz answers bank and legacy eviction from run [skip ci]`).
-
----
-
-## 사이트별 셀렉터 요약
-
-셀렉터의 상세 확인 근거와 수정 이력은 각 스크립트 상단 docstring과 `MEMORY.md` 참조.
-
-### 닥터빌 (doctorville.py)
-- 로그인: 인트로(`/intro`) → `a[href*="mims-account.shop.co.kr"][href*="/login"]` 추출 → mims 로그인(`input[name="identifier"]`, `input[type="password"]`, `button[type="submit"]:has-text("로그인")`)
-- 퀴즈 레이어: `#quizLayerPop` / 라디오 `input[name="an_N"][value="V"]` / 제출 `.btn_answer` / 오답 시 `:text('오답입니다')` 감지(→ bank eviction) / 정답 시 `:text('정답입니다')` / 완료 시 레이어 내 "축하드립니다" 텍스트(→ already_done) / 닫기 `.btn_cancel`
-- 세미나 목록: `span.ico_apply` → `a.list_detail`의 `seminarId`
-- 세미나 신청: `/seminar/seminarDetail?seminarId=XXXX` → `a.btn_bn`("신청하기") → 개인정보 동의 `button.btn_confirm`
-
-### 키메디 (keymedi.py)
-- 로그인: `input[name="uid"]`, `input[name="password"]`, `button:has-text("로그인")`
-- 출석: 미출석 "출석체크하기" / 완료 "출석완료" (텍스트로만 구분) — **"출석체크하기"를 먼저 확인**(달력형 페이지에 과거 "출석완료"가 여러 개 존재해 오판 위험)
-- 광고 팝업: "광고보고 출석하기" 클릭 필수(안 누르면 미지급, 새 탭 뜰 수 있음)
-- 완료 모달: "출석체크가 완료되었습니다" + "확인"
-
-### HMP (hmp.py)
-- 로그인: `input[name="memId"]`, `input[name="passwd"]`, `button.btn_login:has-text("로그인")`
-- 캡슐 버튼: 신 UI "오늘의 캡슐 받기" 텍스트 / 구 UI `#capsuleBtn`(미완료)·`#capsuleBtnComplete`(완료) — **가시성(is_visible)으로 판단**
-- 완료 팝업: `[id="10rewardPopup"]` 내부 "확인" (id가 숫자로 시작해 `[id="..."]` 속성 셀렉터 필요)
-- **댓글 (`_run_comment`, 2026-07-29 수정):** `a[onclick*="goDetail"]` 전체에서 boardSeq 수집 → **번호 내림차순(최신순) 정렬 후 상위 8개를 순회** → 각 상세(`knowCommBoardDetail.hm?boardSeq=XXXX`)에서 `#cmtDiv .cmtName`에 내 닉네임(`form.cmtForm span` 첫 번째)이 있으면 **다음 후보로 넘어감** → 없으면 `textarea[name="cmtCntnt"]` "감사합니다" → `form.cmtForm button[onclick*="saveCmt"]` → confirm 수락 → alert "저장 완료". 후보를 모두 소진하면 `already_done`.
-  - **목록 첫 링크만 보면 안 된다:** 상단 3개는 고정 게시물(공지·[지식스폰서])이라 매일 동일하고 번호도 낮다(2026-07-29 실측: 2518741·2501691·2496228이 최신글 2522297 위). 예전 코드는 여기 남긴 옛 댓글을 보고 매일 `already_done`으로 끝나 실제로는 댓글을 한 건도 쓰지 않았다.
-- **글쓰기 (`_run_post`):** `button.btnWrite` → `#writePopupDiv` → `#_topicNm` 클릭(드롭다운) → `input[name="topicGbn"][value="TOPIC_13"]`(여행/취미) → `#title` "오늘도 화이팅" → `iframe#innoditor_0` body + `#innoditorSource_0` textarea에 `{요일}요일이네요. 다들 화이팅하세요.` → `#tag` "화이팅" Enter → `.botSubmit button[onclick*="saveBoard"]` → confirm → alert "게시글이 작성 완료 됐습니다.". already_done 체크 없음.
-- **GitHub Actions headed 실행:** `xvfb-run -a python3 scripts/daily_runner.py --headed` (Xvfb 가상 디스플레이 필요, workflow에서 `sudo apt-get install -y xvfb` 선행)
-
----
-
-## 닥터빌 세미나 신청 DOM 패턴
-
-신청가능 세미나 추출:
-```js
-Array.from(document.querySelectorAll('span.ico_apply')).map(span => {
-  const aEl = span.closest('a.list_detail');
-  return { seminarId: new URL(aEl.href).searchParams.get('seminarId'), title: aEl.innerText.trim() };
-})
+```bash
+venv/bin/pytest
+venv/bin/python3 scripts/daily_runner.py --no-telegram --headed
+venv/bin/python3 scripts/doctorville.py --account bjh7790 --task quiz --headed
+venv/bin/python3 scripts/recon.py --item R3
 ```
 
-신청 흐름 (각 seminarId마다 반복):
-1. `/seminar/seminarDetail?seminarId=XXXX` 이동
-2. `a.btn_bn` 텍스트가 "신청하기"이면 클릭
-3. `button.btn_confirm` 출현 시 클릭 (개인정보 동의)
-4. `a.btn_bn` 텍스트가 "신청취소"로 바뀌면 완료
-
 ---
 
-## 라이브 세미나 자동/수동 입장 (`seminar_live.py`, 2026-07-25 업데이트)
+## 정책
 
-- **스케줄:** 30분 간격. 트리거는 **외부 cron(cron-job.org) → `workflow_dispatch` API 단일 경로** —
-  설정값과 발급 절차는 [`docs/external-cron.md`](docs/external-cron.md) 참조.
-  - 점심 세미나: KST 10:07~13:37 / 저녁 세미나: KST 16:07~18:37
-  - `.github/workflows/seminar_live.yml`의 GitHub `schedule` 블록은 **2026-07-28 제거**했다.
-    공용 스케줄러 지연·누락이 심해(2026-07-25~27 기대 28회 중 3회 발화, 최대 80분 지연)
-    백스톱으로도 값이 없었다. 외부 cron이 멈추면 입장도 멈추므로 cron-job.org의 실패 알림과
-    PAT 만료일을 관리할 것. (`daily.yml`의 14:00 KST cron은 그대로 GitHub schedule을 쓴다.)
-  - Actions 탭 수동 실행(`workflow_dispatch`)도 지원.
-- 스크립트: `scripts/seminar_live.py`
-- 동작: `/seminar/main`에서 현재 "입장하기"가 뜬(=신청 완료 + 방송 중) 라이브 세미나를 모두 찾아, 각 세미나 상세 페이지에서 입장 → 팝업 창(스트리밍 화면)에서 `--stay-seconds`초(기본 20초) 대기 → 팝업 닫기를 반복.
-- 계정: `--account all|bjh7790|wonju` (기본 all = 두 계정 순회).
-- **상태 관리 (`scripts/state/seminar_entered.json`):**
-  - 당일 이미 입장한 세미나 ID 이력을 저장하며, 정확한 스키마는 `{"date": "YYYY-MM-DD", "accounts": {"bjh7790": {"entered": [...], "blocks": {"lunch": [...], "evening": [...], "manual": [...]}}}}` 이다.
-  - `--block auto` 옵션은 KST 기준 16:00 경계를 사용해 점심 세미나(16:00 KST 이전 → `lunch`)와 저녁 세미나(16:00 KST 이후 → `evening`) 블록을 자동 구분한다.
-  - GitHub Actions `actions/cache`로 실행 간 이력을 보존하여 30분 간격 실행 시 중복 진입 방지.
-  - 필요 시 `--ignore-state` 옵션으로 상태 무시 실행 가능.
-- 결과는 텔레그램으로 전송(`--no-telegram`으로 생략 가능).
-
-### DOM 근거 (2026-07-20, 로그인된 실제 세션에서 확인)
-- `/seminar/main` 목록의 입장 가능 마커: `span.ico_enter` (신청 가능 마커 `span.ico_apply`와 동일 구조/위치) → `closest('a.list_detail').href`의 `seminarId` 추출.
-- 세미나 상세(`/seminar/seminarDetail?seminarId=X`)의 입장 버튼: `a.btn_bn.btn_enter`, 텍스트 "입장하기", `onclick="playOnPopup(...)"` — 내부에서 `window.open()`을 호출해 새 창(팝업)으로 스트리밍 화면을 띄운다. Playwright `page.expect_popup()`으로 캐치.
-- 목록에 있어도 방문 시점에 방송이 끝났거나 아직 시작 전이면 상세 페이지에 `a.btn_bn.btn_enter`가 없을 수 있음 → `skipped` 처리 후 다음 세미나로 진행.
-
----
-
-## 인터엠디 오늘의 퀴즈 (`intermd.py`, 2026-07-27~)
-
-- 실행: **daily_runner에서 제외됨(2026-07-29). 수동 실행 전용** — `venv/bin/python3 scripts/intermd.py`. 계정은 bjh7790만.
-- 정답 소스: **`intermd_answer.json`** — `{"answer": "<정답 보기 텍스트>", "updated_at": "..."}`. 이력을 쌓지 않고 항상 최신 1건만 덮어쓴다.
-- 정답 등록: 텔레그램 봇에 `인터엠디:프로미나드`(또는 `인터엠디 프로미나드`, `인터엠디 4`) 한 줄 전송 → `telegram_inbox.py --fetch`가 파싱해 저장하고 `✅ 인터엠디 정답 → … 저장` 답장. 닥터빌 legacy 시퀀스(`에빅사 111`)보다 **먼저** 판정하므로 `인터엠디 4`처럼 숫자만 보내도 legacy 제품명으로 오인되지 않는다.
-- 매칭: 저장값이 **숫자만이면 1-based 보기 번호**(`"4"` = 네 번째 보기). 숫자가 아니면 공백 정규화 후 **부분 포함(substring)** 으로 보기와 대조하되 **유일 매칭일 때만** 선택한다(0건·2건 이상이면 `no_answer`). 완전 일치가 하나면 그것을 우선한다. 번호는 화면 렌더링 순서에 의존하므로 보기 순서가 섞이는 날에는 오답이 될 수 있다.
-- `no_answer`일 때 텔레그램 메시지에 오늘 문항·보기 전체가 포함되므로, 보기 텍스트 일부를 그대로 회신하면 된다.
-- 하루 1문항 전제. 문항이 2개 이상 감지되면 시도하지 않고 `no_answer`로 알린다.
-- **캡차:** `#captchaText`는 평소 부모 `div.fail`이 `display:none`이고 로그인 실패가 누적되면 노출된다. 노출되면 캡차를 풀지 않고 즉시 `failed`로 중단한다(수동 로그인 필요).
-- **WAF 차단 (2026-07-28 발생):** GitHub Actions 러너에서 로그인 페이지가 통째로 `403 Forbidden`으로 내려왔다(같은 런에서 키메디·닥터빌·HMP는 정상, 로컬 실행도 정상 → 인터엠디만 러너 IP/헤더 기준 차단 추정). 증상은 `#memberId` 20초 타임아웃이라 셀렉터 문제로 오해하기 쉽다. 대응: 컨텍스트에 `locale="ko-KR"` + `Accept-Language` 헤더를 명시했고, `detect_block()`이 짧은 본문의 차단 문구(`403 forbidden` 등)를 잡아 `접속 차단됨(...)` 메시지로 보고한다. **헤더 조정으로 뚫릴지는 다음 CI 실행에서만 확인 가능**하고, IP 기준 차단이면 이 조치로는 해결되지 않는다.
-- **IP 차단 확정 (2026-07-29):** 헤더 조치 후에도 7-28·7-29 이틀 연속 러너에서 403. 같은 시각 같은 코드·계정으로 로컬(집 IP) 실행은 정상 제출됨 → 헤더가 아니라 **Azure 데이터센터 IP 대역 차단**. 코드로 해결 불가로 판단해 daily_runner에서 제외했다. 되살리려면 셀프호스티드 러너(맥) 또는 한국 residential 프록시가 필요하다.
-
-### 셀렉터 (2026-07-27 실측)
-- 로그인: `#memberId`, `#memberPw`, `button.loginForm__btn--login` → 성공 시 `/home.do`
-- 퀴즈 진입: `a#quizBtn` → 같은 페이지에 퀴즈 레이어
-- 문항: `h2.pollSurvey__title`(앞에 `span.pollSurvey__quiz`="퀴즈" 배지), 보기: `div.pollSurvey__body span.inputbox__radio label > input[type=radio]` + `span.text`
-- 제출: `button#saveBtn` / 정답 `[data-cont="state2"]`·선물상자형 `[data-cont="state3"]` / 오답 `[data-cont="state4"]`
-- 이미 참여: `p.quizOverlap[data-cont="over"]` 가시
-
----
-
-## 닥터빌 세미나 설문조사 (`seminar_survey.py`, 2026-07-27~)
-
-- 실행: `.github/workflows/seminar_live.yml`의 **마지막 스텝**(입장 처리 직후). 별도 스크립트라 수동 실행도 가능.
-- 대상: `scripts/state/seminar_entered.json`의 당일 `entered` 중 계정별 `survey_done`에 없는 세미나. 상태 파일이 없으면 `skipped`로 조용히 종료한다. `--seminar-id 5473`로 상태를 무시하고 특정 세미나만 처리할 수 있다.
-- 흐름: `/seminar/broadcastSeminarPopup?viewType=2&seminarId=<ID>` → `a#surveyEnter`("설문 참여") → 개인정보 동의 레이어의 `button.btn_answer:has-text("설문하기")`(항상 동의) → `survey.villeway.com` 새 창(`expect_popup`).
-- 설문 폼 DOM: `form[id^="surveyForm"]`, 문항 `li[data-question-number]`, 문항 텍스트 = `label > div`의 첫 줄(선행 `[퀴즈]` 배지·후행 `*` 포함), 보기 = `ol li label` 안의 `input[type=radio|checkbox]` + `span.col-start-2`, 제출 = `input[type=submit][value="제출하기"]`.
-- **문제은행 `survey_answers.json`** — 세미나 구분 없는 단일 파일. `{ "<정규화된 문항 텍스트>": "<보기 번호 또는 답변 텍스트>" }`. 키는 `[퀴즈]` 배지와 후행 `*`를 제거하고 공백을 정규화한 문자열.
-- **값 형식 (2026-07-27~):**
-  - 선택형: **숫자만이면 1-based 보기 번호**(`"2"` = 두 번째 보기). 숫자가 아니면 보기 텍스트 부분 포함 + 유일 매칭.
-  - 복수 선택: `"1,3"` 또는 `["1", "3"]`. 쉼표 분리는 모든 조각이 숫자일 때만 적용되므로, 쉼표가 들어간 보기 텍스트를 그대로 써도 안전하다.
-  - 주관식: 입력할 문장을 그대로.
-  - 빈 문자열은 항상 "미등록".
-- **번호 방식은 위치 기반이라 같은 문항이 다른 세미나에서 보기 순서가 바뀌면 오답이 된다.** 순서가 흔들릴 가능성이 있는 문항은 텍스트로 적어두는 편이 안전하다.
-- 미등록 알림의 보기 목록에는 입력할 번호가 붙어 나온다(`1. …`, `2. …`).
-- **미등록 문항이 1건이라도 있으면 그 페이지를 제출하지 않고 중단**(`incomplete_bank`)하고, 문항 키를 빈 값으로 `survey_answers.json`에 추가한 뒤 텔레그램으로 문항·보기를 알린다. 값만 채워 커밋하면 다음 실행에서 제출된다.
-- 설문은 **페이지 순차 제출형**이다. 뒷 페이지는 앞 페이지를 제출해야 보이므로 전체 사전 검증은 불가능하고, 페이지 단위 검증이 최대 안전선이다.
-- 한 세미나의 실패가 다른 세미나·계정 처리를 막지 않는다. 상태값: `success | incomplete_bank | no_questions | skipped | failed`.
-- **모달 처리 (2026-07-28 추가):** 임시저장된 초안이 있으면 설문 창에 headlessui 모달("알림 / 작성 중인 정보를 불러왔습니다")이 뜨고, 그 backdrop이 포인터 이벤트를 가로채 제출 버튼 클릭이 30초 타임아웃으로 실패한다. `dismiss_alerts()`가 창을 열 때·제출 직전·제출 직후에 `[role="dialog"][data-headlessui-state="open"]` 안의 확인/닫기 버튼을 눌러 닫는다. **모달 루트는 크기가 0이라 `is_visible()`이 False**이므로 존재(count) 여부로만 판정해야 한다.
-- **만족도 척도형 문항 (2026-07-28 추가):** "금일 강의 만족도" 같은 척도 문항은 보기 텍스트가 input을 감싼 label이 아니라 `label[for="<input id>"]`(별도 label)에 있어, 기존 추출로는 보기 텍스트가 전부 빈 문자열이었다. `read_questions()`가 빈 텍스트일 때 `label[for]`를 폴백으로 읽는다. 5점 척도 = 매우 만족 / 만족 / 보통 / 불만족 / 매우 불만족.
-- 제출 완료 후 방송 팝업의 `a#surveyEnter`가 사라지므로, **"이미 참여함"과 "설문 마감"이 구분되지 않고 둘 다 `no_questions`**로 보고된다.
-
----
-
-## 개인정보 동의 정책
-
-세미나 신청 시 "개인정보 활용 동의" 모달 → **항상 동의**(`button.btn_confirm`).
-(성함·근무형태·진료과·근무처·이메일 제3자 제공, 12개월 보유 — 사용자 사전 승인)
-
----
-
-## 결과 상태값 (JSON status)
-
-| status | 의미 | 텔레그램 |
-|---|---|---|
-| `success` | 완료(포인트 적립) | ✅ |
-| `already_done` | 오늘 이미 완료 | ☑️ |
-| `skipped` | `--task` 옵션으로 건너뜀 | ⏭️ |
-| `no_answer` | 퀴즈 정답 미등록(미시도) | ❓ |
-| `incomplete_bank` | 설문 문제은행에 미등록 문항 있음(미제출) | ❓ |
-| `no_questions` | 설문이 제공되지 않음/이미 참여 | ⏭️ |
-| `failed` | 예상치 못한 오류 | ❌ |
-
-닥터빌 결과는 `{attend, quiz, seminar}` 중첩 구조, 키메디·HMP는 flat 구조다. 스크립트가 통째로 실패하면(실행 예외·타임아웃) 중첩 키 없이 top-level `{status:"failed", message}`만 반환하며, `daily_runner.py`는 이 경우도 ❌로 정확히 표시한다.
-
----
-
-## 작업 후 기록 규칙
-
-작업 완료 후 새로 알게 된 사항(UI 변경, 예외, 신규 패턴, 상태값 등)은 `MEMORY.md`에 추가.
-반복 패턴이 굳어지면 이 CLAUDE.md에도 반영.
-
----
-
-## 과거 실행 방식 (이력용, 현재 미사용)
-
-아래는 GitHub Actions 전환 이전 방식이다. **더 이상 일일 루틴에서 사용하지 않는다.** 셀렉터 근거 등 참고 목적으로만 남긴다.
-
-- **Claude in Chrome MCP** (`mcp__claude-in-chrome__*`): 닥터빌·HMP를 브라우저에서 직접 조작. 승진/원주 프로필 창을 각각 열어 처리. JS click()이 막히는 버튼(퀴즈 제출 등)은 `computer`로 좌표 클릭.
-- **Desktop Commander** (`mcp__Desktop_Commander__start_process`): 사용자 Mac에서 keymedi.py/hmp.py를 직접 실행(외부망 접근 가능). 30초 timeout, 결과 JSON 수신.
-- 이 방식들은 도메인 차단이 들쭉날쭉하고 토큰 소모가 커서 폐기하고 GitHub Actions 무인 실행으로 이관했다.
+- **개인정보 활용 동의: 항상 동의**(`button.btn_confirm`). 사용자 사전 승인 완료(제3자 제공, 12개월 보유).
+- **텔레그램 정답 마감:** 닥터빌 퀴즈 정답은 **15:00 KST 이전** 도착분만 그날 daily 실행에 반영된다.
+- **CI는 워킹트리가 아니라 HEAD를 돌린다.** 동작이 "옛날 코드" 같으면 `git show HEAD:<파일>`부터 확인.
+- **성공의 양성 증거 (`verified_by`):** `status: "success"`에는 항상 `verified_by`가 동반되어야 하며, 없으면 `unverified`(`alert`)로 강등된다.

@@ -1,203 +1,270 @@
 # MEMORY.md
 
-실행 중 확인된 사실·예외 패턴을 축적하는 파일. 새로 알게 된 내용은 여기에 추가. 날짜별 파일 생성 금지.
-
-> **아키텍처 (2026-07-14~):** GitHub Actions cron에서 `scripts/daily_runner.py`가 무인 실행한다. 운영 지침은 `CLAUDE.md`, 구현은 `AUTOMATION.md` 참조. **아래 "과거 실행 방식(이력용)" 이하의 Chrome in Chrome MCP / Desktop Commander / computer-use 관련 기록은 전환 이전(2026-06-23~07-10) 내용으로, 현재 루틴과 무관하다.** 일일 실행 결과는 이제 텔레그램 히스토리에 남으므로 이 파일에 날짜별 로그를 더 쌓지 않는다.
+DocAuto의 상세 지식 저장소. 셀렉터·파일 포맷·설계 근거·버그 이력·교훈. 운영 규칙은 [CLAUDE.md](CLAUDE.md).
+새로 알게 된 내용은 여기에 추가한다. **날짜별 파일·별도 md 생성 금지.** 일일 실행 결과는 텔레그램 히스토리에 남으므로 여기에 로그를 쌓지 않는다.
 
 ---
 
-## 스크립트 버그 수정 이력
+## credentials 스키마
+
+```json
+{
+  "telegram": { "bot_token": "...", "chat_id": "..." },
+  "bjh7790": {
+    "email": "bjh7790@gmail.com",
+    "doctorville": { "password": "..." },
+    "keymedi":     { "id": "bjh7790", "password": "..." },
+    "hmp":         { "password": "..." },
+    "intermd":     { "id": "bjh7790", "password": "..." }
+  },
+  "wonju": { "email": "wonju1119@naver.com", "doctorville": { "password": "..." } }
+}
+```
+
+- 닥터빌: 로그인 id = 계정의 `email`.
+- 키메디: `keymedi.id`(이메일 아님) 필수.
+- HMP·인터엠디: `id` 생략 시 **계정 키 자체**("bjh7790")를 id로 사용.
+- 계정/필드 추가 시 GitHub `CREDENTIALS_JSON` secret도 갱신해야 CI에 반영된다(미갱신으로 인한 실패 이력 있음).
+
+---
+
+## 셀렉터
+
+각 스크립트 상단 docstring이 1차 근거. 아래는 요약.
+
+### 닥터빌 (`doctorville.py`)
+- 로그인: `/intro` → `a[href*="mims-account.shop.co.kr"][href*="/login"]` → mims(`input[name="identifier"]`, `input[type="password"]`, `button[type="submit"]:has-text("로그인")`) → `wait_for_url("*doctorville.co.kr*")`.
+- 퀴즈 진입: `/product/main` → `.quiz_calender`에서 오늘 날짜 다음 줄 제품명 + `td.today` 내 hidden input `.pIdCls`의 pId → `/product/productView?pId=XXX`.
+- 퀴즈 레이어: `#quizLayerPop`(오버레이 `.layer_quiz`) / 문항 `.question_area` 반복(`.txt_question`, `ul.question_choice li input[name="an_N"][value="V"]` + `label`) / 문항수 `#questionCnt` / 제출 `.btn_answer` / 정답 `:text('정답입니다')` / 오답 `:text('오답입니다')` / 이미 완료 `:text('축하드립니다')` / 닫기 `.btn_cancel`.
+- 세미나 목록: `span.ico_apply` → `closest('a.list_detail')`의 `seminarId`.
+- 세미나 신청: `/seminar/seminarDetail?seminarId=X` → `a.btn_bn`("신청하기") → `button.btn_confirm`(동의) → 텍스트가 "신청취소"로 바뀌면 완료.
+- 라이브 입장: 목록 마커 `span.ico_enter` → 상세 `a.btn_bn.btn_enter`("입장하기", `onclick="playOnPopup(...)"` → `window.open`) → Playwright `expect_popup()`.
+- 설문: `/seminar/broadcastSeminarPopup?viewType=2&seminarId=X` → `a#surveyEnter` → `button.btn_answer:has-text("설문하기")` → `survey.villeway.com` 새 창.
+- 설문 폼: `form[id^="surveyForm"]`, 문항 `li[data-question-number]`, 문항 텍스트 = `label > div` 첫 줄(`[퀴즈]` 배지·후행 `*` 포함), 보기 = `ol li label` 내 `input[type=radio|checkbox]` + `span.col-start-2`, 제출 `input[type=submit][value="제출하기"]`.
+
+### 키메디 (`keymedi.py`)
+- 로그인: `input[name="uid"]`, `input[name="password"]`, `button:has-text("로그인")`.
+- 출석: "출석체크하기"(미출석) / "출석완료"(완료). **"출석체크하기"를 먼저 확인**하고 최대 3초(500ms×6) 폴링 후 판단.
+- 광고 팝업 "광고보고 출석하기" 클릭 필수(안 누르면 미지급, 새 탭 가능).
+- 완료 모달: "출석체크가 완료되었습니다" + "확인".
+
+### HMP (`hmp.py`)
+- 로그인: `input[name="memId"]`, `input[name="passwd"]`, `button.btn_login:has-text("로그인")`.
+- 캡슐: 신 UI "오늘의 캡슐 받기" 텍스트 / 구 UI `#capsuleBtn`·`#capsuleBtnComplete` 폴백 — **가시성으로 판단**.
+- 완료 팝업: `[id="10rewardPopup"]` 내 "확인" (숫자 시작 id라 속성 셀렉터 필수).
+- 룰렛: "룰렛 참여하기"(`onclick="roueletteAttendYnPopup(N)"`) → 확인 팝업 `.pop.cont` 처리 → `#startAbled` → `POST /ajax/event/rouelettePercentage.hm` → 결과 팝업 이미지 alt(`[마일리지] X 캡슐 적립 완료`).
+- 댓글: `a[onclick*="goDetail"]` 전체에서 boardSeq 수집 → **내림차순 상위 8개 순회** → `knowCommBoardDetail.hm?boardSeq=X` → "댓글" 토글 클릭 → `#cmtDiv` 바깥의 빈 `form.cmtForm textarea[name="cmtCntnt"]`에 "감사합니다" → `button[onclick*="saveCmt"]` → confirm → alert "저장 완료". 내 닉네임은 `form.cmtForm span` 첫 요소.
+- 글쓰기: `button.btnWrite` → `#writePopupDiv` → `#_topicNm` → `label:has-text("여행/취미")`(= `input[name="topicGbn"][value="TOPIC_13"]`) → `#title` → `iframe#innoditor_0` body + `#innoditorSource_0` → `#tag` "화이팅" Enter → `.botSubmit button[onclick*="saveBoard"]` → confirm → alert. AJAX: `POST /ajax/knowcomm/insertKnowCommBoard.hm`, `rtn_code==100` 성공.
+
+### 인터엠디 (`intermd.py`)
+- 로그인: `#memberId`, `#memberPw`, `button.loginForm__btn--login` → `/home.do`.
+- 퀴즈: `a#quizBtn` → 문항 `h2.pollSurvey__title`, 보기 `div.pollSurvey__body span.inputbox__radio label > input[type=radio]` + `span.text`.
+- 제출 `button#saveBtn` / 정답 `[data-cont="state2"]`·`[data-cont="state3"]`(선물상자) / 오답 `[data-cont="state4"]` / 이미 참여 `p.quizOverlap[data-cont="over"]`.
+- 캡차 `#captchaText`는 평소 부모 `div.fail`이 display:none. 노출되면 **풀지 않고 즉시 `failed`**.
+
+---
+
+## 데이터 파일 포맷
+
+### `quiz_answers.json` (닥터빌 문제은행)
+`{제품명: {문항텍스트: 정답보기텍스트}}`. 위치·번호 미사용, 실행 시점 렌더링 텍스트를 공백 정규화 후 매칭.
+- 제품명은 **상세페이지 표기와 정확히 일치**해야 한다("대웅징코샷" vs "대웅징코샷정240mg" 불일치로 no_answer 이력).
+- 미매칭 문항이 하나라도 있으면 통째 `no_answer` + 텔레그램에 오늘 문항·보기 JSON 전문 포함.
+- O/X도 화면 라벨 텍스트 그대로 저장.
+- 제출 성공 시 화면의 `{문항: 정답}`을 자동 학습·커밋(`chore: update quiz answers bank and legacy eviction from run [skip ci]`).
+
+### `quiz_answers_legacy.json` (구형식 폴백)
+`{제품명: "111"}` 문자열. 리스트 형식 사용 안 함. 문제은행 매칭 실패 시에만 사용.
+처리 순서: `quiz_answers.json` → `quiz_answers_legacy.json` → `no_answer`.
+
+**오답 eviction:** `:text('오답입니다')` 감지 시 해당 키를 **두 파일 모두에서 삭제**. 사후 커밋 스텝이 두 파일을 함께 `git add` 해야 `git pull --rebase`가 미커밋 변경으로 exit 128 나는 것을 막는다.
+
+### `intermd_answer.json`
+`{"answer": "...", "updated_at": "..."}`. 최신 1건만 덮어쓴다.
+매칭: 숫자만이면 **1-based 보기 번호**, 아니면 공백 정규화 후 **부분 포함 + 유일 매칭**(완전 일치 1건이면 우선). 0건·2건 이상이면 `no_answer`. 하루 1문항 전제 — 2문항 이상 감지 시 미시도.
+> 최신 1건 구조라, 실행 시각(14:00 KST) 이후 도착한 정답은 다음 날 엉뚱한 문항에 대조된다(무해하나 하루 손실).
+
+### `survey_answers.json` (설문 문제은행)
+`{정규화된 문항텍스트: 값}`. 세미나 무관 단일 파일. 키는 `[퀴즈]` 배지·후행 `*` 제거 + 공백 정규화.
+- 선택형: 숫자만 → 1-based 보기 번호. 아니면 보기 텍스트 부분 포함 + 유일 매칭.
+- 복수 선택: `"1,3"` 또는 `["1","3"]`. **쉼표 분리는 모든 조각이 숫자일 때만** — 쉼표 포함 보기 텍스트를 그대로 써도 안전.
+- 주관식: 입력할 문장 그대로. 빈 문자열은 항상 "미등록".
+- 척도형 5점 = 매우 만족 / 만족 / 보통 / 불만족 / 매우 불만족.
+> 번호 방식은 위치 기반이라 다른 세미나에서 보기 순서가 바뀌면 오답이 된다. 흔들릴 수 있는 문항은 텍스트로 적는 편이 안전하다.
+
+### `scripts/state/seminar_entered.json` (State v2)
+`{"version": 2, "date": "YYYY-MM-DD", "accounts": {"bjh7790": {"entered": [{"id": 5473, "title": "...", "start": "2026-08-10(월) 13:00 ~ 14:00", "entered_at": "ISO시간"}], "survey": {"5473": "done"}, "blocks": {"lunch": [], "evening": [], "manual": []}}}}`
+- `version: 2` 스키마 적용 (v1 파일 로드 시 자동 마이그레이션).
+- `parse_dd_date`: `"2026-08-10(월) 13:00 ~ 14:00"` 형식 텍스트를 KST 타임존 파싱.
+- 마감 계산 (`evaluate_survey_cutoff`): 마감 시각 = 세미나 종료 + 90분 (폴백: 시작/입장 시각 + 3시간).
+- 마감 시각 전 = `not_ready` (`quiet`), 마감 시각 후 = `closed` (`quiet`).
+- gitignore 대상이며 `actions/cache`로 런 간 유지.
+
+---
+
+## 텔레그램 인박스 설계 (`telegram_inbox.py`)
+
+봇은 알림 봇과 동일(`TELEGRAM_BOT_TOKEN` 재사용, 새 시크릿 없음). `getUpdates` 폴링.
+
+흐름: `getUpdates`(offset 없이) → **chat_id 필터** → 줄 단위 파싱 → 파일 갱신 → 답장 → **워크플로우가 커밋·푸시** → `--confirm-offset`으로 확정.
+
+- **offset 확정을 맨 마지막에 하는 이유:** `getUpdates?offset=N` 호출 순간 이전 업데이트가 서버에서 영구 삭제된다. 커밋 성공 후 확정해야 중간에 죽어도 다음 실행에 다시 읽힌다(중복 처리는 같은 값 덮어쓰기라 멱등).
+- **chat_id 인증은 필수.** 없으면 봇 이름을 아는 누구나 저장소에 쓸 수 있다. 불일치 메시지는 답장 없이 버리고 offset만 확정.
+- 파싱 순서: **인터엠디(`인터엠디:X` / `인터엠디 X`)를 먼저** 판정 → 그 다음 닥터빌 legacy(`<제품명> <시퀀스>`). 그래서 `인터엠디 4`가 legacy 제품명으로 오인되지 않는다.
+- legacy 문법: `line.rsplit(None, 1)`(제품명에 공백 허용), 시퀀스 `^[0-9oOxX]+$` 길이 1~10, `o`/`x` 소문자 정규화, 기존 키 덮어쓰기.
+- 문제은행에 없는 제품명도 거부하지 않고 저장 + 경고 답장(`⚠️ … 오타 확인`).
+- 피기백 실행: 두 워크플로우 **맨 앞** 스텝, `continue-on-error: true`. 최대 공백 18:30→다음날 14:00(getUpdates 24시간 보존 한도 내). 두 워크플로우 모두 `permissions: contents: write` 필요.
+- **채택 안 함 — 텔레그램 → GitHub 직접 트리거:** `setWebhook`은 URL과 `secret_token`만 설정 가능하고 커스텀 `Authorization` 헤더를 못 붙인다. GitHub API는 `Bearer <PAT>`를 요구하므로 릴레이(Worker 등) 없이는 불가능.
+- **채택 안 함 — 오답 피드백 기반 정답 탐색:** 오답 문구가 틀린 문항 번호를 알려줘 3~5회면 전 문항 확보 가능하나, 하루 기회가 3회뿐.
+
+---
+
+## 외부 cron (cron-job.org → workflow_dispatch)
+
+## 외부 cron (cron-job.org → workflow_dispatch)
+
+GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-job.org)을 주 트리거로 사용한다. PAT 만료 시 401로 실패하므로 cron-job.org 실패 알림 및 PAT 만료일을 관리할 것.
+
+**PAT (fine-grained):** repository access = `SJBaek7790/DocAuto`만, permissions = **Actions: Read and write** + Metadata(자동).
+
+**1) DocAuto seminar block (`seminar_block.yml`):**
+- URL: `https://api.github.com/repos/SJBaek7790/DocAuto/actions/workflows/seminar_block.yml/dispatches`
+- Method / Body: `POST` / `{"ref":"main"}`
+- Headers: `Accept: application/vnd.github+json`, `Authorization: Bearer <PAT>`, `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`
+- Timezone: `Asia/Seoul`
+- Schedule: Minutes `0,30` / Hours `11,12,13,14,17,18,19,20,21` (하루 18회)
+
+**2) DocAuto daily (`daily.yml`):**
+- URL: `https://api.github.com/repos/SJBaek7790/DocAuto/actions/workflows/daily.yml/dispatches`
+- Method / Body: `POST` / `{"ref":"main"}`
+- Headers: `Accept: application/vnd.github+json`, `Authorization: Bearer <PAT>`, `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`
+- Timezone: `Asia/Seoul`
+- Schedule: Minutes `0` / Hours `15` (15:00 KST 주 실행)
+- 백스톱: GitHub schedule `0 7 * * *` (16:00 KST) 남김
+
+---
+
+## 중앙 알림 게이트 및 Severity (`scripts/notify.py`)
+
+알림 게이트는 `NOTIFY_LEVEL` 환경변수(`actionable` [default] 또는 `all`)에 따라 텔레그램 메시지 발송 여부를 정한다.
+
+- **Severity 계층:** `alert` (3) > `action` (2) > `ok` (1) > `quiet` (0).
+- `actionable` 모드: 전체 severity가 `action` (2) 이상일 때만 전송 (개입 필요 항목 및 오류만 추출).
+- `all` 모드: 모드와 무관하게 모든 실행 결과 요약 전송.
+- **성공의 양성 증거 (`verified_by`):** `status: "success"`는 `verified_by` 필드가 동반되어야 `ok` (1)로 평가되며, 미비 시 `unverified` (`alert`, 3)로 강등된다.
+
+
+---
+
+## 버그·수정 이력
 
 ### doctorville.py
 | 버그 | 원인 | 수정 |
 |---|---|---|
-| `networkidle` 타임아웃 | 백그라운드 요청으로 networkidle 미도달 | `wait_until="load"` + `DEFAULT_TIMEOUT_MS` 30000 |
-| mims 로그인 감지 실패 | `wait_for_load_state("load")`가 SSO 전환보다 먼저 끝남 | `wait_for_url("*doctorville.co.kr*")`로 교체 (2026-07-09) |
-| 퀴즈 레이어 ID 오류 | `#applyInfo` 대기했으나 실제 ID는 `#quizLayerPop` | 전면 교체 |
-| 결과 팝업 셀렉터 오류 | `"text=정답입니다, ..."` 쉼표 다중 셀렉터 + text= 혼용 불가 | `:text('정답입니다')` 단일 셀렉터 |
-| 퀴즈 already_done 미인식 | 이미 제출 시 레이어가 "축하드립니다" 뷰로 열려 `.btn_answer` 없음 → failed | `:text('축하드립니다')` 감지 시 `already_done` |
-
-**퀴즈 레이어 구조 (2026-07-10 DOM 확인):** 팝업 `#quizLayerPop`(오버레이 `.layer_quiz`) / 라디오 `input[name="an_N"][value="V"]` / 제출 `.btn_answer` / 닫기 `.btn_cancel` / 완료 시 "축하드립니다" 텍스트.
+| `networkidle` 타임아웃 | 백그라운드 요청으로 미도달 | `wait_until="load"` + 타임아웃 30s |
+| mims 로그인 감지 실패 | `wait_for_load_state("load")`가 SSO 전환보다 먼저 끝남 | `wait_for_url("*doctorville.co.kr*")` |
+| 퀴즈 레이어 ID 오류 | `#applyInfo`가 아니라 `#quizLayerPop` | 전면 교체 |
+| 결과 팝업 셀렉터 | 쉼표 다중 셀렉터 + `text=` 혼용 불가 | `:text('정답입니다')` 단일 |
+| 퀴즈 already_done 미인식 | 제출 완료 시 "축하드립니다" 뷰라 `.btn_answer` 없음 | `:text('축하드립니다')` → `already_done` |
+| pId 조회 실패 | `/product/medicineList` 검색은 의약품 전용 — 모비케어 등 의료기기 미등록 | 캘린더 `td.today .pIdCls`에서 직접 추출(medicineList는 폴백만) |
 
 ### keymedi.py
-- 첫 성공: 2026-07-06 (세 번째 시도). 수정 순서 = ① `externally-managed-environment` → venv ② 로그인 URL 매칭 오판 → 폼 가시성 체크 ③ 클릭 직후 경쟁 상태 오판 → 폼 hidden 대기.
-- already_done 오판(2026-07-12~14): 달력에 과거 "출석완료" 버튼이 여러 개 존재 → "출석체크하기"를 **먼저** 확인해야 함. 오늘 버튼이 뷰포트 밖이면 `is_visible()` False가 되므로 가시성 대신 count>0 + scroll 후 클릭.
-- **재발(2026-07-16, 4번째):** 위 수정에도 불구하고 미출석 상태에서 again already_done 오판 발생(사용자가 직접 확인). opus 자문 결과 root cause로 지목된 것: 바로 위 `wait_for_selector('button:has-text("출석체크하기"), button:has-text("출석완료")')`가 OR 매칭이라 과거 날짜 "출석완료" 버튼만 먼저 DOM에 붙어도 즉시 리턴되고, 그 순간 바로 `attend_btn.count()`를 체크하면 오늘 버튼이 아직 마운트 전이라 0으로 읽힐 수 있음. 수정: 즉시 판단하지 않고 최대 3초(500ms×6) 폴링 후 판단 + already_done 분기에 스크린샷 저장 추가(이전에는 이 분기가 스크린샷을 안 남겨서 오판이 나도 사후 검증이 불가능했음). **주의: 폴링은 타이밍 문제만 해결한다.** 만약 다음에 또 재발하면 셀렉터/텍스트 자체가 바뀌었을 가능성이 높으니, 이번엔 스크린샷이 남으므로 `logs/keymedi_*_already_done_*.png`로 확인할 것.
-  - **로컬 실행 검증(2026-07-16 저녁):** 실제로 실행해보니 이미 이날 아침 cron으로 출석이 완료된 상태라 already_done이 나왔고, 저장된 스크린샷으로 실제 "출석완료" 버튼 상태임을 육안 확인 — 이 결과 자체는 참(진짜 완료)이었다. **미출석 상태에서의 폴링 로직 자체는 이번엔 검증하지 못함** — 다음에 미출석 상태(자정 직후 등)에서 한 번 더 확인 필요.
+- 첫 성공 2026-07-06. 수정 순서: venv 전환 → 로그인 URL 매칭 대신 폼 가시성 → 클릭 후 폼 hidden 대기.
+- **already_done 오판 4회 반복.** 달력에 과거 "출석완료"가 여러 개 존재. 결정타는 `wait_for_selector('A, B')` OR 매칭이 과거 버튼만 붙어도 즉시 리턴해 오늘 버튼 마운트 전에 `count()`를 읽은 것. 수정: 3초 폴링 + already_done 분기에도 스크린샷 저장(이전엔 이 분기가 스샷을 안 남겨 사후 검증 불가였다).
+- **미출석 상태에서의 폴링 로직은 아직 미검증.** 재발 시 `logs/keymedi_*_already_done_*.png`로 셀렉터 변경 여부부터 확인.
 
 ### hmp.py
-- 셀렉터 리뉴얼(2026-07-07): 구 `#capsuleBtn`/`#capsuleBtnComplete` ID 사라짐 → "오늘의 캡슐 받기" 텍스트 + `wait_until="load"` + `wait_for_timeout(2000)` 병행. 구 ID는 fallback 유지.
-- CSS 셀렉터에 `text=` 혼용 시 파싱 오류 → locator 분리.
-- 완료 팝업 `#10rewardPopup`은 숫자 시작 ID → `[id="10rewardPopup"]` 속성 셀렉터.
-- 관찰: 페이지 진입만으로 자동 출석 처리되는 경우가 있어 스크립트 클릭→팝업 흐름이 될 때·안 될 때가 갈림. 팝업 감지 실패 시 페이지 상태 변화로 완료를 판정하는 대안 검토 여지.
-- **지식커뮤니티 댓글 자동화 추가 (2026-07-15):** `_run_comment()` — `knowCommHome.hm` 최상단 게시물 boardSeq 추출(onclick regex) → `knowCommBoardDetail.hm?boardSeq=XXXX` GET 이동 → `#cmtDiv .cmtName` 에 내 닉네임 있으면 already_done → `textarea[name="cmtCntnt"]`에 "감사합니다" → `form.cmtForm button[onclick*="saveCmt"]` 클릭 → confirm 수락 → 성공 alert "저장 완료". 내 닉네임은 `form.cmtForm span` 첫 번째 요소에서 동적으로 읽음.
-- **지식커뮤니티 글쓰기 자동화 추가 (2026-07-15):** `_run_post()` — `knowCommHome.hm` → `button.btnWrite` 클릭 → `#writePopupDiv` 팝업 대기 → `#_topicNm` 클릭(드롭다운 열기) → `input[name="topicGbn"][value="TOPIC_13"]`(여행/취미) → `#title` "오늘도 화이팅" → iframe `#innoditor_0` body + `#innoditorSource_0` textarea에 `{요일}요일이네요. 다들 화이팅하세요.` → `#tag` "화이팅" Enter → `.botSubmit button[onclick*="saveBoard"]` → confirm 수락 → 성공 alert "게시글이 작성 완료 됐습니다.". already_done 체크 없음(하루 1회 실행 전제). AJAX 엔드포인트: `POST /ajax/knowcomm/insertKnowCommBoard.hm`, rtn_code==100 성공.
-- **GitHub Actions headed 실행 (2026-07-15):** Ubuntu CI에는 물리 디스플레이가 없으므로 `xvfb-run -a` 를 통해 가상 프레임버퍼(Xvfb)를 띄운 뒤 `--headed` 로 Chromium을 실행. workflow에 `sudo apt-get install -y xvfb` 단계 추가, 실행 커맨드를 `xvfb-run -a python3 scripts/daily_runner.py --headed` 로 변경.
-- **댓글 strict mode violation (2026-07-16):** 게시물에 기존 댓글이 있으면 그 댓글의 답글/수정 폼도 `textarea[name="cmtCntnt"]`를 가져서(값이 기존 댓글 텍스트로 채워진 채) 매칭이 2개 이상 되어 예외 발생(`_run_comment`, 실제 로그: 3개 매칭 — 빈 것 2개 + "언제나 화이팅" 텍스트로 채워진 것 1개). `.first`만으로는 불충분(기존 댓글 수정 폼을 잘못 잡아 덮어쓸 위험, opus 자문 지적). 1차 수정: 새 댓글 폼을 `#cmtDiv`(기존 댓글 목록 컨테이너) 바깥 + textarea 값이 비어있는 `form.cmtForm`으로 스코프.
-  - **1차 수정만으로는 부족했음(로컬 실행으로 발견, 2026-07-16):** 댓글 0개인 게시물에서도 "새 댓글 입력창을 찾을 수 없음"으로 계속 실패. 디버그 스크립트로 실제 DOM 조회 결과, `form.cmtForm`은 정확히 1개 존재하지만 **기본 상태에서 `textarea[name="cmtCntnt"]`가 `is_visible()=False`** — "댓글" 토글 버튼을 눌러야 펼쳐짐. 이전 07-15 성공 사례는 어쩌다 이미 펼쳐진 상태였을 가능성. 2차 수정: 폼 스코핑 전에 `button:has-text("댓글")` 토글을 먼저 클릭해서 펼친 뒤 탐색. 로컬 실행으로 실제 댓글 작성 성공 확인 완료(게시물 2515921, "저장 완료").
-- **댓글 goto 타임아웃 (2026-07-21):** `_run_comment`의 `knowCommHome.hm` 첫 goto가 `Page.goto: Timeout 15000ms exceeded`로 실패(캡슐 출석은 success, 룰렛 3회는 "START 버튼이 표시되지 않음"으로 시도됨). 같은 실행에서 곧바로 이어진 `_run_post`가 동일 URL로 goto해 즉시 성공 — 셀렉터/코드 문제가 아니라 GitHub Actions 러너의 일시적 네트워크 지연으로 판단. `common.py`에 `goto_with_retry()` 추가(타임아웃 시 2초 대기 후 최대 2회 재시도) 후 hmp.py의 `COMM_HOME_URL`/`COMM_DETAIL_URL` goto 3곳(comment 2곳, post 1곳)에 적용. 다음 실행에서 실제로 재시도가 문제를 흡수하는지 결과 확인 필요.
-- **글쓰기 토픽 선택 실패 (2026-07-16):** `input[name="topicGbn"][value="TOPIC_13"]` 직접 클릭이 "element is not visible"로 15초 타임아웃(스크린샷상 "여행/취미" pill 자체는 렌더링되어 보임 — 커스텀 스타일링을 위해 실제 `<input>`이 시각적으로 숨겨진 패턴으로 추정, opus 자문). 수정: 보이는 라벨 텍스트(`label:has-text("여행/취미")`)를 우선 클릭, 못 찾으면 `force=True`로 폴백, 클릭 후 `is_checked()`로 실제 선택 여부 검증 후 필요시 재시도. **로컬 실행으로 실제 성공 확인 완료** ("글 작성 완료: '오늘도 화이팅' (목요일)").
-
-공통 로그인/스크린샷/폼로그인 로직은 `scripts/common.py`로 추출(2026-07-14).
-
-### seminar_live.py (신규, 2026-07-20)
-- 요청: daily 루틴과 별개로, 수동(GitHub Actions workflow_dispatch)으로만 실행해 `/seminar/main`의
-  입장 가능한 라이브 세미나를 전부 순회하며 입장→20초 대기→창 닫기를 반복.
-- **DOM 확인 방법:** 로컬 sandbox에는 Playwright 브라우저 실행에 필요한 시스템 라이브러리를 sudo 없이
-  설치할 수 없어(BrowserType.launch 실패, `sudo playwright install-deps` 필요하나 권한 없음) Playwright로
-  직접 탐색 불가. 대신 Claude in Chrome MCP로 사용자의 실제 로그인 세션에 붙어 DOM을 조사함.
-- 확인된 구조:
-  - `/seminar/main`: 입장 가능 마커 `span.ico_enter`(신청 가능 마커 `span.ico_apply`와 동일 위치·구조) →
-    `closest('a.list_detail').href`에서 `seminarId` 추출. (조사 시점 실 데이터로 2건 확인: 5457, 5460)
-  - 세미나 상세: `a.btn_bn.btn_enter`, 텍스트 "입장하기", `onclick="playOnPopup(...)"`.
-    `playOnPopup`은 `window.open()`을 호출함(함수 소스 직접 검사는 페이지 내 쿠키/쿼리스트링 패턴으로
-    추정되어 도구가 차단 — `usesWindowOpen`/`argCount` 등 구조만 간접 확인). → Playwright
-    `page.expect_popup()`으로 새 Page를 캐치하는 구현이 타당하다고 판단.
-- **미검증 사항:** 실제로 "입장하기"를 클릭해 팝업이 뜨고 20초 후 닫히는 전 과정은 아직 실행해보지
-  않았음(탐색 중 실제 시청 이력이 남는 것을 피하려 중단). 첫 GitHub Actions 실행 시 반드시
-  `scripts/logs/` 스크린샷(`seminar_live_enter_fail_*` 등)과 텔레그램 결과로 정상 동작 여부를 확인할 것.
-  특히: (1) 팝업이 진짜 뜨는지, (2) `a.btn_bn.btn_enter`가 스트리밍 시간대에만 나타나는지, 신청만 하고
-  아직 시작 전/이미 종료된 세미나에도 다른 텍스트로 남는지, (3) headless로도 동작하는지(다른 스크립트들은
-  headless에서 문제가 있어 전부 `xvfb-run --headed`로 전환한 전례가 있음 — 이 스크립트도 동일하게
-  headed로 시작).
+- 캡슐 셀렉터 리뉴얼(2026-07-07): 구 ID 소멸 → 텍스트 기반 + 구 ID 폴백.
+- 페이지 진입만으로 자동 출석되는 경우가 있어 클릭→팝업 흐름이 갈린다.
+- **댓글 strict mode violation:** 기존 댓글의 수정/답글 폼도 `textarea[name="cmtCntnt"]`를 가져 2개 이상 매칭. `.first`는 위험(기존 댓글 덮어쓰기). → `#cmtDiv` 바깥 + 값이 빈 폼으로 스코프. 추가로 **기본 상태에서 textarea가 `is_visible()=False`** — "댓글" 토글을 먼저 눌러야 펼쳐진다.
+- **댓글이 매일 "이미 작성 완료"였던 이유(2026-07-29):** 목록 첫 링크만 확인했는데 상단 3개가 고정 게시물(공지·[지식스폰서], 실측 2518741·2501691·2496228이 최신글 2522297보다 번호가 낮다). 거기 남은 옛 댓글을 완료 신호로 읽어 매일 아무것도 안 했다. → 내림차순 상위 8개 순회로 수정, 2522445에 작성 성공 확인.
+- **글쓰기 토픽 선택 실패:** `input[name="topicGbn"]`이 커스텀 스타일링으로 시각적 숨김 → 보이는 `label:has-text("여행/취미")` 우선 클릭, `force=True` 폴백, `is_checked()` 검증 후 재시도.
+- **룰렛 확인 팝업 미처리(2026-07-15):** "룰렛 참여하기" 클릭 후 휠이 아니라 `.pop.cont` 확인 팝업이 먼저 뜰 수 있고, 안 닫으면 재시도 때 "intercepts pointer events" 연쇄 실패. `_run_roulette()`에 팝업 확인 단계 추가(운영망 미검증 — 다음 활성화 때 확인).
+- **goto 타임아웃(2026-07-21):** 러너의 일시적 네트워크 지연. `common.goto_with_retry()`(2초 대기 후 최대 2회 재시도) 추가.
 
 ### daily_runner.py
-- 텔레그램 전송 400 Bad Request(2026-07-15): 원인은 메시지 길이 초과, 파싱 오류가 아니었음. hmp.py 룰렛 실패 시 넘어오는 Playwright 예외(call log 포함, 건당 최대 ~2400자)를 축약 없이 그대로 넣어 메시지 전체가 Telegram sendMessage 4096자 제한을 넘김 → 400. `_short()`로 각 task 메시지를 첫 줄·200자로 축약 + `send_telegram()`에 4096자 안전망 추가, `HTTPError`는 응답 body까지 로그로 남기도록 수정(다음에 같은 종류 오류가 나도 원인이 로그에 바로 보이게).
-- **실행 순서 변경(2026-07-16):** 키메디 → 닥터빌(bjh7790) → 닥터빌(wonju) → HMP 순으로 변경(기존: 키메디 → HMP → 닥터빌×2). HMP를 맨 뒤로 미룸(사용자 요청).
-- **닥터빌 120초 타임아웃(2026-07-15~16 실제 발생):** 출석+퀴즈+세미나 3단계를 순차 실행하고 세미나는 신청 가능 건수만큼 반복 순회하는 구조라 기존 120초 제한을 두 계정 모두 초과해 "타임아웃 (120초)" failed로 강제 종료됨. `run_script()`에 `timeout` 파라미터를 추가하고 닥터빌 호출만 240초로 늘림(키메디/HMP는 기존 120초 유지). 참고: 실패 시점 스크린샷(`doctorville_quiz_layer_open_*.png`)은 퀴즈 레이어가 정상적으로 열린 직후 항상 찍히는 디버그샷이라 그 자체가 실패 지점을 가리키진 않음 — 타임아웃은 스크립트 전체 소요 시간 문제였을 가능성이 높음(세미나 신청 가능 건수가 많은 날 특히 취약, 다음에도 재발하면 세미나 루프 자체의 소요 시간을 로그로 남길 것).
+- **텔레그램 400 Bad Request:** 파싱 오류가 아니라 **길이 초과**였다. Playwright 예외(call log 포함 ~2400자)를 그대로 넣어 4096자 한도 초과. `_short()`(첫 줄·200자) + 4096자 안전망 + `HTTPError` 응답 body 로깅.
+- **닥터빌 120초 타임아웃:** 출석+퀴즈+세미나 순차 + 세미나 건수만큼 반복이라 초과. 닥터빌만 240초.
+- 실행 순서: 키메디 → 닥터빌×2 → HMP (HMP를 맨 뒤로, 사용자 요청).
+
+### seminar_survey.py
+- **headlessui 모달이 제출을 막음:** 임시저장 초안이 있으면 "작성 중인 정보를 불러왔습니다" 모달의 backdrop이 포인터 이벤트를 가로채 제출 클릭이 30초 타임아웃(실패한 실행이 초안을 남겨 재시도할수록 재현). `dismiss_alerts()`를 창 오픈 직후·제출 직전·직후에 호출.
+  - **함정: 모달 루트는 크기 0이라 `is_visible()`이 False.** 이 프로젝트에서 "가시성으로 판단"이 정석이던 것과 반대로, 여기서는 `count()`로만 판정해야 한다.
+- **척도형 보기 텍스트:** 보기 텍스트가 input을 감싼 label이 아니라 `label[for="<input id>"]`에 있어 전부 빈 문자열이었다 → `label[for]` 폴백 추가.
+- **제출 후에도 `a#surveyEnter`가 사라진다** → "이미 참여"와 "마감"이 구분되지 않고 둘 다 `no_questions`.
+- 설문은 페이지 순차 제출형이라 전체 사전 검증 불가. **페이지 단위 검증이 도달 가능한 최대 안전선**이라 미등록 1건이면 그 페이지를 제출하지 않고 `incomplete_bank`로 중단한다.
+
+### seminar_live.py (2026-07-20 신규)
+- 로컬 sandbox에서 Playwright 시스템 라이브러리 설치 불가(sudo 필요)해 DOM 조사는 Claude in Chrome MCP로 실제 로그인 세션에 붙어 수행했다.
+- `playOnPopup` 소스 직접 검사는 도구 필터에 걸려 `usesWindowOpen` 등 구조만 간접 확인.
+- 목록에 있어도 방문 시점에 방송 종료/미시작이면 상세에 `a.btn_bn.btn_enter`가 없다 → `skipped` 후 다음 세미나.
 
 ---
 
-## 신규 기능 및 시스템 업데이트 (2026-07-25)
+## 인터엠디 차단 (해결 불가 판정)
 
-### 1. 크론 스케줄 변경 및 세미나 30분 간격 실행
-- **일일 루틴 크론 변경:** 기존 08:01 KST (`1 23 * * *`) → **21:01 KST (`1 12 * * *`)** 시간대 변경 (`.github/workflows/daily.yml`).
-- **라이브 세미나 자동 크론:** `.github/workflows/seminar_live.yml`에 30분 간격 cron 추가.
-  - 점심 세미나: 10:00~13:30 KST (`0,30 1-4 * * *` UTC)
-  - 저녁 세미나: 16:00~18:30 KST (`0,30 7-9 * * *` UTC)
-  - Actions 탭 수동 실행(`workflow_dispatch`)도 유지.
-
-### 2. 라이브 세미나 상태 관리 (`scripts/state/seminar_entered.json`)
-- 날짜 및 계정별 입장한 세미나 ID 이력을 `scripts/state/seminar_entered.json`에 저장하며, 정확한 스키마는 `{"date": "YYYY-MM-DD", "accounts": {"bjh7790": {"entered": [...], "blocks": {"lunch": [...], "evening": [...], "manual": [...]}}}}` 이다.
-- `--block auto` 옵션 사용 시 KST 16:00 경계(16:00 KST 이전 `lunch`, 16:00 KST 이후 `evening`)로 블록을 자동 구분한다.
-- GitHub Actions `actions/cache`로 런 간 상태를 유지하여 30분 간격 실행 시 이미 입장 처리된 세미나의 중복 진입 방지.
-- 필요 시 `--ignore-state` 파라미터로 이력을 무시하고 전체 시도 가능.
-
-### 3. 텔레그램 인박스 파서 (`scripts/telegram_inbox.py`)
-- 텔레그램 봇 채팅에서 `에빅사 111` 또는 `[제품명] [정답시퀀스]` (공백 없는 시퀀스 문자열, 예: `"111"`) 메시지를 수신하여 `quiz_answers_legacy.json` (`{ "에빅사": "111" }` 문자열 포맷, 리스트 `["1", "2", "3"]` 사용 안 함)에 자동으로 정답 저장.
-- 워크플로우 3단계 연동: `--fetch` 실행 → git diff 감지 시 auto commit (`chore: update legacy quiz answers from telegram inbox [skip ci]`) → `--confirm-offset`으로 offset 확정.
-
-### 4. 퀴즈 폴백, 오답 삭제(Eviction) 및 정답 자동 학습
-- **퀴즈 처리 순서:** `quiz_answers.json` (문제은행 텍스트 매칭) → `quiz_answers_legacy.json` (구형식 보기 번호 시퀀스 매칭) → `no_answer`.
-- **오답 삭제 (Bank Eviction):** 제출 결과 감지 시 `:text('오답입니다')` 오답 감지 시, 해당 키를 `quiz_answers.json` 문제은행과 `quiz_answers_legacy.json` 구형식 정답 양쪽에서 모두 자동 삭제(eviction)하여 다음 실행 시 동일 오답 제출을 방지.
-- **정답 자동 학습:** 제출 결과 성공 시 화면의 `{문항텍스트: 정답보기텍스트}`를 `quiz_answers.json` 문제은행에 자동 학습 및 커밋 (`chore: update quiz answers bank from run [skip ci]`).
+- 증상: `#memberId` 20초 타임아웃 → 셀렉터 문제로 오해하기 쉬우나, **artifact 스크린샷은 `403 Forbidden` 한 줄짜리 Apache 페이지**였다.
+- 1차 대응(헤더): `locale="ko-KR"` + `Accept-Language` 명시, `detect_block()`으로 차단 문구 감지해 `접속 차단됨(...)` 보고.
+- **2026-07-29 확정:** 헤더 조치 후에도 7-28·7-29 연속 403. 같은 시각·같은 코드로 로컬(집 IP)은 정상 제출 → **Azure 데이터센터 IP 대역 차단**. 코드로 해결 불가로 판단해 `daily_runner`에서 제외, 수동 실행 전용.
+- 되살리려면 셀프호스티드 러너(맥) 또는 한국 residential 프록시가 필요하다.
 
 ---
 
-## 세미나 설문·크론 (2026-07-28)
+## 알려진 리스크
 
-### 1. GitHub `schedule` 제거 (`seminar_live.yml`)
-- cron-job.org 외부 트리거(KST :07/:37, 10~13시·16~18시)가 정상 동작 확인됨 → **GitHub 자체 `schedule` 블록 삭제**. 이제 라이브 세미나 워크플로우의 자동 트리거는 외부 cron 단일 경로다.
-- 백스톱을 남기지 않은 이유: 공용 스케줄러가 2026-07-25~27 기대 28회 중 3회만 발화(최대 80분 지연)해 백스톱 가치가 없었음. 대신 cron-job.org 실패 알림과 PAT 만료일 관리가 필수.
-- `daily.yml`의 21:01 KST cron은 **그대로 유지**(외부 cron 미연동, 지연 허용 범위).
-
-### 2. 설문 제출을 막던 headlessui 모달 (`seminar_survey.py`)
-- 증상: 보기 선택까지는 성공하는데 `input[type=submit][value="제출하기"]` 클릭이 30초 타임아웃. 로그에 `headlessui-dialog-backdrop-:rN: ... intercepts pointer events`.
-- 원인: 임시저장 초안이 있으면 설문 창에 "알림 / 작성 중인 정보를 불러왔습니다" 모달이 뜨고, 그 backdrop이 전면을 덮는다. (실패한 실행이 초안을 남기므로 재시도할수록 재현됨.)
-- 수정: `dismiss_alerts()` 추가 — 창을 연 직후·제출 직전·제출 직후에 `[role="dialog"][data-headlessui-state="open"]` 내부 확인/닫기 버튼 클릭.
-- **함정:** 모달 루트 엘리먼트는 크기가 0이라 `is_visible()`이 **False**다. 가시성으로 판정하면 모달을 못 보고 지나친다 → `count()`로만 판정할 것. (이 프로젝트의 다른 사이트에서 "가시성으로 판단"이 정석이었던 것과 반대 사례.)
-
-### 3. 만족도 척도형 문항 보기 텍스트
-- "금일 강의 만족도는 어떻게 되시나요?" 같은 척도 문항은 보기 텍스트가 input을 감싼 label의 `span`이 아니라 **`label[for="<input id>"]`(별도 label)** 안에 있어, 기존 추출로는 5개 보기가 전부 빈 문자열이었다.
-- `read_questions()`에 `label[for]` 폴백 추가. 척도: 매우 만족 / 만족 / 보통 / 불만족 / 매우 불만족.
-
-### 4. 2026-07-28 설문 처리 결과 (wonju)
-- 5475·5501 제출 성공. 5474는 `a#surveyEnter`가 이미 사라져 `no_questions`(제출 전 마감 또는 이미 참여) — 정답은 `survey_answers.json`에 등록해 뒀으므로 다음 동일 문항에서 재사용된다.
-- **제출 완료 후에도 `a#surveyEnter`가 사라진다** → "이미 참여함"과 "마감"이 구분되지 않고 둘 다 `no_questions`로 보고된다는 점을 감안해 결과를 읽을 것.
-
-### 5. 인터엠디 보기 번호 입력 + 오답장 원인
-- 증상(2026-07-28): 텔레그램에 `인터엠디 4`를 보냈더니 `⚠️ 인터엠디 → 4 저장 (인터엠디은(는) quiz_answers.json에 없는 제품명 — 오타 확인)` 답장. 즉 닥터빌 legacy 규칙(`<제품명> <시퀀스>`)이 먹었다.
-- **원인은 파서 로직이 아니라 미배포였다.** `parse_intermd_line`을 포함한 인터엠디 지원 전체(`scripts/intermd.py`, `telegram_inbox.py` 수정분)가 로컬에만 있고 커밋·푸시되지 않아, CI는 인터엠디를 모르는 옛 코드로 돌았다. → 2026-07-28 커밋·푸시로 해소.
-- **교훈: 텔레그램 응답이 "옛 동작"처럼 보이면 코드부터 의심하지 말고 `git show HEAD:<파일>`로 배포본을 먼저 확인할 것.** CI는 워킹트리가 아니라 HEAD를 돌린다.
-- 함께 개선: `intermd.py match_choice()`가 **숫자만인 저장값을 1-based 보기 번호로 해석**한다(`"4"` = 네 번째 보기). 이제 `인터엠디 4`가 그대로 동작한다. 단 번호는 화면 순서 의존이라 보기 순서가 섞이면 오답이 된다 — 확실히 하려면 보기 텍스트 일부를 보낼 것.
-
-### 6. 인터엠디 정답 등록 검증
-- `intermd_answer.json`은 최신 1건만 덮어쓰는 구조라, 텔레그램으로 보낸 정답이 **당일 21:01 실행 이후**에 도착하면 다음 날 실행에 그대로 남아 엉뚱한 문항에 대조된다(매칭 실패 → `no_answer`, 무해하지만 하루 손실).
-- 2026-07-28: 불면증 진료지침 문항의 4번 보기를 등록해 수동 실행 → `correct: true` 제출 완료.
+1. **구형식 legacy 시도는 하루 3회 기회 중 1회를 태운다.** 위치가 맞은 사례(모비케어 `"123"`, 아림시스 `"112"`)와 어긋난 사례(펙수클루 `"332"`→`"323"` 정정, 커밋 `394d8ec`)가 모두 있다. 안전조건은 방어일 뿐 순서 섞임 자체는 못 막는다.
+2. **위치 기반 매칭 전반**(legacy 시퀀스, 설문·인터엠디 번호)은 보기 순서가 섞이면 오답. 퀴즈 레이어에 "커뮤니티 정답 공유 시 패널티" 경고가 있어 사용자별 셔플 가능성이 있다 — 위치 기반 저장을 2026-07-19 폐기한 이유.
+3. **PAT 만료 시 401로 조용히 실패.** cron-job.org 실패 알림 필수.
+4. **`getUpdates` 24시간 보존.** 인박스 폴링이 하루 넘게 죽으면 그 사이 메시지는 복구 불가.
+5. **봇 webhook 충돌.** webhook이 설정되면 `getUpdates`가 409. 현재는 전송 전용.
 
 ---
 
-## HMP 댓글·인터엠디 차단·크론 (2026-07-29)
+## 교훈
 
-### 1. HMP 댓글이 매일 "이미 작성 완료"였던 이유 (실제로는 미작성)
-- `_run_comment`가 목록 **첫 링크 하나**만 보고 내 댓글이 있으면 `already_done`으로 끝냈다.
-- 그런데 목록 상단 3개는 고정 게시물이다(2026-07-29 실측: `2518741`, `2501691`[지식스폰서], `2496228` — 모두 최신글 `2522297`보다 번호가 낮다). 여기 남긴 **옛날 댓글** 때문에 매일 "작성 완료"로 보고하면서 지식내공은 한 건도 못 받았다.
-- 수정: boardSeq를 전부 모아 **번호 내림차순(최신순)** 정렬 → 상위 8개를 순회하며 내 댓글이 없는 첫 글에 작성. 전부 이미 작성돼 있을 때만 `already_done`.
-- 실제 검증: 2026-07-29 로컬 실행에서 고정글을 건너뛰고 `2522445`에 댓글 작성 성공.
-- **교훈: `already_done` 판정은 "오늘 것"인지 확인해야 한다.** 날짜 개념 없는 흔적(과거 댓글)을 완료 신호로 쓰면 조용히 아무것도 안 하는 자동화가 된다.
-
-### 2. 인터엠디 403 (GitHub Actions 차단)
-- 증상: `타임아웃: Page.wait_for_selector ... "#memberId"`. 셀렉터 문제처럼 보이지만 **artifact 스크린샷은 `403 Forbidden` 한 줄짜리 Apache 페이지**였다.
-- 같은 런에서 키메디·닥터빌·HMP는 정상, 로컬 실행도 정상 → 인터엠디만 러너 IP/헤더 기준으로 막힌 것으로 보인다.
-- 대응: 브라우저 컨텍스트에 `locale="ko-KR"` + `Accept-Language: ko-KR,...` 명시, `detect_block()`으로 차단 페이지를 감지해 `접속 차단됨(403 forbidden)`으로 보고. **뚫릴지는 다음 CI 실행에서만 확인 가능하며, IP 차단이면 헤더로는 해결되지 않는다**(그때는 별도 실행 환경 필요).
-- **교훈: 타임아웃 메시지보다 스크린샷 artifact를 먼저 볼 것.** `gh run download <run-id>`로 바로 받을 수 있다.
-
-### 3. 일일 크론 14:00 KST로 변경
-- `daily.yml`: `1 12 * * *`(21:01 KST) → **`0 5 * * *`(14:00 KST)**.
-- 부작용: 텔레그램으로 보내는 퀴즈 정답은 이제 **14:00 KST 이전**에 도착해야 그날 실행에 반영된다.
+- **`already_done` 판정은 "오늘 것"인지 확인해야 한다.** 날짜 개념 없는 흔적(과거 댓글·과거 출석완료 버튼)을 완료 신호로 쓰면 조용히 아무것도 안 하는 자동화가 된다. HMP 댓글·키메디 출석 둘 다 같은 함정에 빠졌다.
+- **타임아웃 메시지보다 스크린샷 artifact를 먼저 볼 것** (`gh run download <run-id>`). 인터엠디 403이 셀렉터 타임아웃으로 위장했다.
+- **CI는 워킹트리가 아니라 HEAD를 돌린다.** 응답이 "옛 동작" 같으면 코드 로직보다 `git show HEAD:<파일>`부터.
+- **분기마다 스크린샷을 남겨라.** 스샷 없는 분기는 오판이 나도 사후 검증이 불가능하다.
+- **가시성 판정은 만능이 아니다.** 대부분은 `is_visible()`이 정답이지만, 크기 0인 모달 루트나 커스텀 스타일로 숨긴 input에는 `count()`/`label` 우회가 필요하다.
+- **화면 미반영 ≠ 실패.** 세미나 "신청하기" 후 텍스트가 즉시 안 바뀌어도 성공한 경우가 많다 → 재진입해 "신청취소" 확인.
+- **퀴즈 placeholder 오판:** 캘린더가 오늘자 제품명을 "?"로 보여줄 수 있다(SPA 로딩 지연). "?"만 보고 "퀴즈 없음" 단정 금지.
+- **세미나 동의 모달 변형:** 대개 `button.btn_confirm` 한 번이지만 일부는 2단계(제3자 제공 + 마케팅 선택). 항상 동의.
+- **상태 오기재 금지.** 실제 목표(포인트 적립) 달성 시에만 완료 처리(2026-07-02 사고).
 
 ---
 
-## 퀴즈 정답 참고
+## 순수 함수 테스트 지점
 
-정답은 `quiz_answers.json`이 소스 오브 트루스. 제품명은 상세페이지 표기와 정확히 일치해야 매칭된다.
-- **이름 불일치 주의:** 상세페이지가 "대웅징코샷정240mg"으로 뜨면 `quiz_answers.json`의 "대웅징코샷" 키와 매칭 안 됨(2026-07-09 no_answer). 상세 표기 기준으로 키를 추가/보정할 것.
-- **위치 기반 저장 방식 폐기(2026-07-19):** 기존엔 보기 번호 시퀀스 문자열("111" 등)로 저장했으나, 사용자가 "같은 약도 날짜마다 문항 수·순서가 다르다"고 지적. 실제로 DOM 조사(2026-07-19, 우루사)한 결과 당일 문항 수는 2개인데 기존 저장값 `"332"`는 3자리 — 이미 어긋나 있었음. 게다가 레이어 안내문에 "커뮤니티에 정답을 공유하는 경우 패널티가 있을 수 있습니다"라는 경고가 있어, 보기 순서 자체도 사용자별/방문별로 섞일 가능성이 있음 → 위치 기반 매칭은 문항 수가 우연히 맞아도 안전하지 않다고 판단.
-- **신규 방식: 문제은행(dict).** `quiz_answers.json`을 `{제품명: {문항텍스트: 정답보기텍스트}}`로 전면 변경. `doctorville.py task_quiz()`가 실행 시점에 `.question_area`를 순회하며 `.txt_question`/`.question_choice label` 텍스트를 그대로 조회해 매칭(공백 정규화만 적용, 위치·번호 미사용). 미매칭 문항이 하나라도 있으면 `no_answer`로 통째 스킵하고, 텔레그램 메시지에 오늘 실제 문항/보기 텍스트 전체를 JSON으로 포함시켜 사용자가 바로 정답만 채워 넣을 수 있게 함.
-- **구 형식 보기 번호 폴백 & Eviction (2026-07-25/26):** `quiz_answers_legacy.json`을 폴백으로 지원하며, 제출 오답 시 해당 구형식 제품 키도 통째 삭제(eviction). 사후 커밋 스텝(`git add quiz_answers.json quiz_answers_legacy.json`)으로 두 파일 모두 커밋하여 `git pull --rebase` 미커밋 변경사항 충돌(exit 128)을 방지하고 삭제 이력을 지속함.
-- **텔레그램 인박스 경고 및 저장 (2026-07-26):** 인박스로 전달된 정답 시퀀스가 문제은행에 없는 제품명이라도 등록을 거부하지 않고 `legacy_dict`에 저장하며 `⚠️ {제품명} → {시퀀스} 저장 (... 오타 확인)` 경고를 반환함(spec §6.5 충실).
+Playwright 계층은 라벨 텍스트만 추출해 순수 함수에 넘긴다. `tests/`에 단위 테스트 존재.
+
+| 함수 | 위치 |
+|---|---|
+| `legacy_to_choice_indices` / `parse_wrong_numbers` / `match_quiz_bank` | `doctorville.py` |
+| `parse_inbox_line` / `parse_intermd_line` | `telegram_inbox.py` |
+| `merge_state` / `parse_dd_date` / `upgrade_to_v2` | `seminar_live.py` |
+| `evaluate_survey_cutoff` | `seminar_survey.py` |
+| `severity_of` / `should_send` / `build_message` | `notify.py` |
+| `list_accounts` / `account_label` / `is_recon_enabled` | `common.py` |
+| `match_choice(saved, choices)` | `intermd.py` |
 
 ---
 
-## HMP 연속 출석 이력 (룰렛용 참고 — 갱신 필요)
+## HMP 연속 출석 이력 (룰렛 참고, 갱신 필요)
 
 | 날짜 | 연속 일수 |
 |---|---|
-| 2026-06-24 | 10일 (룰렛 활성 → 사용자 직접) |
-| 2026-06-25 | 11일 |
-| 2026-07-03 | 3일 (그 사이 연속 끊김) |
-| 2026-07-05 | 5일 |
+| 2026-06-24 | 10일 (룰렛 → 100캡슐 당첨) |
+| 2026-07-03 | 3일 (연속 끊김) |
 | 2026-07-06 | 6일 |
-
-룰렛은 연속 10·20·30일에 활성화. **hmp.py에 룰렛 자동화 구현 완료 (2026-07-14).**
-
-### 룰렛 플로우 (2026-07-14 Claude in Chrome MCP로 실제 확인)
-
-- 활성화 조건: 연속 10·20·30일 달성 시 "룰렛 참여하기" 버튼이 `is_visible()=True`
-- 비활성 조건: 미달성 시 DOM에는 있으나 `is_visible()=False`
-- 이미 참여한 경우: 버튼 텍스트가 "참여 완료"로 바뀜
-- 클릭 흐름: "룰렛 참여하기" 클릭 → 룰렛 휠 표시 → `#startAbled` 클릭 → `POST /ajax/event/rouelettePercentage.hm` 호출 → 결과 팝업
-- 결과 판별: 팝업 내 이미지 alt = `[마일리지] X 캡슐 적립 완료` 또는 상품권 텍스트
-- 2026-07-14 실제 결과: 10일 연속 룰렛 → **100캡슐 당첨**
-- daily_runner.py 텔레그램 포맷: `🎡 룰렛: ✅ +100캡슐 100캡슐 당첨` 형태로 출력
-- **버그(2026-07-15): 참여 확인 팝업 미처리.** "룰렛 참여하기" 클릭(`onclick="roueletteAttendYnPopup(N)"`) 시 곧장 휠이 뜨는 게 아니라 참여 여부를 묻는 확인 팝업(`.pop.cont`, 예: `#popCont1`)이 먼저 뜨는 경우가 있었음. 이걸 처리 안 해서 1차 시도는 `#startAbled` 미표시로 실패하고, 안 닫힌 팝업이 2·3차 재시도 때 버튼을 가려 "intercepts pointer events" 클릭 실패가 연쇄됨. `_run_roulette()`에 "룰렛 참여하기" 클릭 직후 `.pop.cont` 중 visible한 것을 찾아 "확인"/"예" 클릭하는 단계 추가로 수정(운영망에서 미검증 — 다음 룰렛 활성화 시 Actions 결과로 확인 필요).
-
----
-
-## 교훈 (전환 이후에도 유효)
-
-- **상태 오기재 금지:** 자동화가 막혀 진행 불가한 항목을 "완료"로 표기하지 말 것. 실제 목표(포인트 적립) 달성 시에만 완료 처리(2026-07-02 사고).
-- **화면 미반영 ≠ 실패:** 세미나 "신청하기" 클릭 후 버튼 텍스트가 즉시 안 바뀌어도 실제로는 성공한 경우가 많음 → 재진입해 "신청취소" 상태로 확인.
-- **퀴즈 placeholder 오판:** `/product/main` "이달의 퀴즈" 캘린더가 오늘자 상품명을 "?"로만 보여줄 수 있음(SPA 로딩 지연) → 재로딩 후 텍스트로 재확인, "?"만 보고 "퀴즈 없음" 단정 금지.
-- **세미나 동의 모달 변형:** 대개 `button.btn_confirm`("동의하기"/"동의합니다.") 한 번이면 되지만, 일부 세미나는 2단계 모달(제3자 제공 + 마케팅 선택)로 뜸 → 항상 동의(마케팅은 선택).
 
 ---
 
 ## 과거 실행 방식 (이력용, 현재 미사용)
 
-아래는 GitHub Actions 전환(2026-07-14) 이전의 반자동 실행 관련 기록이다. 현재 루틴과 무관하며 참고 목적으로만 남긴다.
+GitHub Actions 전환(2026-07-14) 이전의 반자동 실행 기록. 현재 루틴과 무관.
 
-- **Chrome MCP 도메인 차단:** keymedi.com·hmp.co.kr에 대한 `navigate`가 날마다 다르게 "Navigation to this domain is not allowed"로 거부됨(07-01 정상 → 07-02 차단 → 07-03 정상 …). 이 불안정성이 Playwright 스크립트 전환의 계기였고, 최종적으로 GitHub Actions 무인 실행으로 귀결됨.
-- **Desktop Commander 실행:** `mcp__Desktop_Commander__start_process`로 사용자 Mac에서 keymedi.py/hmp.py 직접 실행(외부망 접근 가능). 30초 timeout, 결과 JSON 수신. → daily_runner.py + Actions로 대체됨.
-- **Chrome 프로필 판별:** `list_connected_browsers`의 "Browser 1/2" 이름·deviceId 순서는 연결 시점마다 뒤바뀜 → 이름만으로 판단 금지, 로그인된 계정명으로 검증 필요했음. 원주 프로필 창은 매 세션 사용자가 직접 열어야 했음(computer-use는 브라우저 tier "read"·터미널 tier "click" 제약으로 우회 불가).
-- **JS click 제약:** 퀴즈 "정답 도전" 버튼, 키메디·HMP 로그인 버튼은 JS `.click()` 타임아웃/자동완성 공란 문제로 `computer` 좌표 클릭이 필요했음. `javascript_tool`의 outerHTML/cookie 반환은 콘텐츠 필터로 차단(`[BLOCKED]`)됨. — 모두 헤드리스 Playwright 전환으로 해소.
+- **Chrome MCP 도메인 차단:** keymedi.com·hmp.co.kr `navigate`가 날마다 다르게 거부됨(07-01 정상 → 07-02 차단 → 07-03 정상). 이 불안정성이 Playwright 전환의 계기.
+- **Desktop Commander:** 사용자 Mac에서 스크립트 직접 실행(30초 timeout). → daily_runner + Actions로 대체.
+- **Chrome 프로필 판별:** `list_connected_browsers`의 "Browser 1/2" 순서가 연결마다 뒤바뀜 → 로그인 계정명으로 검증 필요. 원주 프로필(`Profile 2`)은 매 세션 사용자가 직접 열어야 했음.
+- **JS click 제약:** 퀴즈 제출·로그인 버튼은 `computer` 좌표 클릭 필요. `javascript_tool`의 outerHTML/cookie 반환은 콘텐츠 필터로 `[BLOCKED]`. — 모두 Playwright 전환으로 해소.

@@ -1,8 +1,6 @@
-name: 닥터빌 라이브 세미나 자동/수동 입장
+name: 닥터빌 라이브 세미나 블록 실행
 
 on:
-  # 트리거는 cron-job.org → workflow_dispatch API 단일 경로다(docs/external-cron.md).
-  # GitHub 자체 schedule은 지연(최대 80분)·누락이 잦아 2026-07-28 제거했다.
   workflow_dispatch:
     inputs:
       account:
@@ -26,20 +24,25 @@ permissions:
   contents: write
 
 concurrency:
-  group: seminar-live
+  group: seminar-block
   cancel-in-progress: false
 
+env:
+  NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
+
 jobs:
-  seminar-live:
+  seminar-block:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: KST 날짜 설정
-        run: echo "KST_DATE=$(TZ='Asia/Seoul' date +'%Y-%m-%d')" >> $GITHUB_ENV
+      - name: KST 날짜/시각 설정
+        run: |
+          echo "KST_DATE=$(TZ='Asia/Seoul' date +'%Y-%m-%d')" >> $GITHUB_ENV
+          echo "KST_HOUR=$(TZ='Asia/Seoul' date +'%H')" >> $GITHUB_ENV
 
       - name: 세미나 상태 캐시 복원
         uses: actions/cache/restore@v4
@@ -72,7 +75,9 @@ jobs:
           CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}
         run: echo "$CREDENTIALS_JSON" > credentials.json
 
-      - name: Telegram Inbox 수신
+      # Step 1: Telegram Inbox 수신 (11:00 KST 런 전용)
+      - name: Telegram Inbox 수신 (11시 KST 런 전용)
+        if: env.KST_HOUR == '11'
         id: inbox
         continue-on-error: true
         env:
@@ -81,6 +86,7 @@ jobs:
         run: python3 scripts/telegram_inbox.py --fetch
 
       - name: 인박스 결과 커밋 및 푸시
+        if: env.KST_HOUR == '11'
         id: commit_inbox
         continue-on-error: true
         run: |
@@ -94,16 +100,33 @@ jobs:
           fi
 
       - name: Telegram Inbox Offset 확정
-        if: steps.inbox.outputs.next_offset != '' && steps.commit_inbox.outcome == 'success'
+        if: env.KST_HOUR == '11' && steps.inbox.outputs.next_offset != '' && steps.commit_inbox.outcome == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 scripts/telegram_inbox.py --confirm-offset "${{ steps.inbox.outputs.next_offset }}"
 
+      # Step 2: 닥터빌 세미나 신청 실행
+      - name: 닥터빌 세미나 신청 실행
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
+        run: |
+          if [ "${{ inputs.account || 'all' }}" = "all" ]; then
+            xvfb-run -a python3 scripts/doctorville.py --task seminar --account bjh7790 --headed || true
+            xvfb-run -a python3 scripts/doctorville.py --task seminar --account wonju --headed || true
+          else
+            xvfb-run -a python3 scripts/doctorville.py --task seminar --account ${{ inputs.account }} --headed || true
+          fi
+
+      # Step 3: 라이브 세미나 입장 실행
       - name: 라이브 세미나 입장 실행
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
         run: |
           xvfb-run -a python3 scripts/seminar_live.py \
             --account ${{ inputs.account || 'all' }} \
@@ -113,11 +136,13 @@ jobs:
             ${{ inputs.ignore_state && '--ignore-state' || '' }} \
             --headed
 
+      # Step 4: 세미나 설문조사 실행
       - name: 세미나 설문조사 실행
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
         run: |
           xvfb-run -a python3 scripts/seminar_survey.py \
             --account ${{ inputs.account || 'all' }} \
@@ -147,7 +172,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: seminar-live-logs-${{ github.run_number }}
+          name: seminar-block-logs-${{ github.run_number }}
           path: scripts/logs/
           if-no-files-found: ignore
           retention-days: 7

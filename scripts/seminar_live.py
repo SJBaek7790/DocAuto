@@ -34,6 +34,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import common
 import doctorville
 import daily_runner
+import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_TIMEOUT_MS = doctorville.DEFAULT_TIMEOUT_MS
@@ -212,21 +213,6 @@ def determine_block_name(block_arg: str) -> str:
     hour = datetime.now(kst).hour
     return "lunch" if hour < 16 else "evening"
 
-
-def should_notify(results: dict, always_notify: bool = False) -> bool:
-    if always_notify:
-        return True
-    if not isinstance(results, dict):
-        return True
-    for acc, r in results.items():
-        if not isinstance(r, dict):
-            continue
-        if r.get("error"):
-            return True
-        ls = r.get("live_seminar", {})
-        if ls.get("entered") or ls.get("failed") or ls.get("status") == "failed":
-            return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +554,8 @@ def main():
     )
 
     if not args.no_telegram:
-        if should_notify(results, always_notify=args.always_notify):
+        notify_level = "all" if args.always_notify else os.environ.get("NOTIFY_LEVEL", "actionable")
+        if notify.should_send(results, notify_level):
             daily_runner.load_telegram_credentials(str(credentials_path))
             date_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
             msg = format_telegram_message(results, date_str, args.stay_seconds, block_name=block_name)
@@ -576,7 +563,7 @@ def main():
             ok = daily_runner.send_telegram(msg)
             print(f"[telegram] {'성공' if ok else '실패'}")
         else:
-            print("\n[telegram] 전송 조건 미충족 (신규 입장/실패 없음, --always-notify 미지정). 건너뜀.")
+            print("\n[telegram] 전송 조건 미충족. 건너뜀.")
     else:
         print("\n[telegram] 건너뜀 (--no-telegram)")
 

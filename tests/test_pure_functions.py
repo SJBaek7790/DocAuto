@@ -1,6 +1,6 @@
 from doctorville import legacy_to_choice_indices, parse_wrong_numbers
 from telegram_inbox import parse_inbox_line
-from seminar_live import merge_state, should_notify
+from seminar_live import merge_state
 
 def test_legacy_to_choice_indices_valid():
     choices = [
@@ -48,41 +48,3 @@ def test_merge_state():
     # Same date retains state
     same_date = merge_state({"date": "2026-07-25", "accounts": {"bjh7790": {"entered": [123], "blocks": {"lunch": [123], "evening": [], "manual": []}}}}, "2026-07-25")
     assert same_date["accounts"]["bjh7790"]["entered"] == [{"id": 123, "title": None, "start": None, "entered_at": None}]
-
-def test_should_notify():
-    # Actual structure from seminar_live.py
-    # 1. New entered in live_seminar
-    res_entered = {
-        "bjh7790": {
-            "site": "doctorville", "account": "bjh7790",
-            "live_seminar": {"entered": [5457], "failed": [], "already_entered": [5456]}
-        }
-    }
-    assert should_notify(res_entered) is True
-
-    # 2. Failure in live_seminar
-    res_failed = {
-        "bjh7790": {
-            "site": "doctorville", "account": "bjh7790",
-            "live_seminar": {"entered": [], "failed": [5457], "already_entered": []}
-        }
-    }
-    assert should_notify(res_failed) is True
-
-    # 3. Account-level error
-    res_err = {
-        "bjh7790": {
-            "site": "doctorville", "account": "bjh7790",
-            "error": "Login failed"
-        }
-    }
-    assert should_notify(res_err) is True
-
-    # 4. Only already_entered -> False
-    res_none = {
-        "bjh7790": {
-            "site": "doctorville", "account": "bjh7790",
-            "live_seminar": {"entered": [], "failed": [], "already_entered": [5457]}
-        }
-    }
-    assert should_notify(res_none) is False

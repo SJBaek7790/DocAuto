@@ -1,7 +1,7 @@
 import json
 import pytest
 from pathlib import Path
-from seminar_live import load_state, save_state, update_entered_state, determine_block_name, should_notify
+from seminar_live import load_state, save_state, update_entered_state, determine_block_name
 
 def test_load_and_save_state(tmp_path):
     state_file = tmp_path / "seminar_entered.json"
@@ -25,16 +25,6 @@ def test_determine_block_name():
     assert determine_block_name("evening") == "evening"
     assert determine_block_name("manual") == "manual"
     assert determine_block_name("auto") in ["lunch", "evening"]
-
-def test_should_notify_always_notify():
-    res_none = {
-        "bjh7790": {
-            "site": "doctorville", "account": "bjh7790",
-            "live_seminar": {"entered": [], "failed": [], "already_entered": [5457]}
-        }
-    }
-    assert should_notify(res_none, always_notify=False) is False
-    assert should_notify(res_none, always_notify=True) is True
 
 def test_format_telegram_message():
     from seminar_live import format_telegram_message

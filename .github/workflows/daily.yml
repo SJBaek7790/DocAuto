@@ -2,11 +2,14 @@ name: 일일 의료 포털 자동화
 
 on:
   schedule:
-    - cron: '0 5 * * *'  # 매일 14:00 KST (UTC 05:00)
-  workflow_dispatch:        # 수동 실행 (Actions 탭 → "Run workflow")
+    - cron: '0 7 * * *'  # 매일 16:00 KST (UTC 07:00) 백스톱
+  workflow_dispatch:        # 수동 실행 및 외부 cron (cron-job.org 15:00 KST)
 
 permissions:
   contents: write
+
+env:
+  NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
 
 jobs:
   daily-routine:
@@ -71,6 +74,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
         run: xvfb-run -a python3 scripts/daily_runner.py --headed
 
       - name: 퀴즈 정답 및 Legacy 자동 커밋
@@ -84,7 +88,6 @@ jobs:
             git pull --rebase
             git push
           fi
-
 
       - name: 스크린샷 로그 업로드
         if: always()
