@@ -22,6 +22,7 @@ daily 루틴(daily_runner.py)과 무관한 **수동/자동 루틴** 스크립트
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -43,21 +44,94 @@ def save_screenshot(page, tag: str) -> str:
     return common.save_screenshot(page, f"seminar_live_{tag}")
 
 
+def parse_dd_date(date_str: str | None) -> tuple[datetime | None, datetime | None]:
+    """Parse Doctorville date string like '2026-08-10(월) 13:00 ~ 14:00' into KST datetimes.
+
+    Returns (start_datetime, end_datetime) tuple, or (None, None) if parsing fails.
+    """
+    if not date_str or not isinstance(date_str, str):
+        return None, None
+    m = re.search(r"(\d{4}-\d{2}-\d{2})\s*\([^)]+\)\s*(\d{2}:\d{2})\s*~\s*(\d{2}:\d{2})", date_str)
+    if not m:
+        return None, None
+    d_str, s_str, e_str = m.groups()
+    try:
+        start_dt = datetime.strptime(f"{d_str} {s_str}", "%Y-%m-%d %H:%M").replace(tzinfo=common.KST)
+        end_dt = datetime.strptime(f"{d_str} {e_str}", "%Y-%m-%d %H:%M").replace(tzinfo=common.KST)
+        return start_dt, end_dt
+    except ValueError:
+        return None, None
+
+
+def upgrade_to_v2(state: dict) -> dict:
+    """Upgrades state dict from schema v1 to schema v2 in-place and returns it.
+
+    In v2:
+    - version is set to 2.
+    - entered list items are upgraded from int N to {"id": N, "title": None, "start": None, "entered_at": None}.
+    - survey_done list is replaced by survey dict {"N": "done"}.
+    """
+    if not isinstance(state, dict):
+        return {"version": 2, "accounts": {}}
+    if state.get("version") == 2:
+        return state
+    state["version"] = 2
+    accounts = state.setdefault("accounts", {})
+    if isinstance(accounts, dict):
+        for acc, acc_data in accounts.items():
+            if not isinstance(acc_data, dict):
+                continue
+            entered_raw = acc_data.get("entered", [])
+            new_entered = []
+            for item in entered_raw:
+                if isinstance(item, int):
+                    new_entered.append({"id": item, "title": None, "start": None, "entered_at": None})
+                elif isinstance(item, str) and item.isdigit():
+                    new_entered.append({"id": int(item), "title": None, "start": None, "entered_at": None})
+                elif isinstance(item, dict):
+                    entry = {
+                        "id": item.get("id"),
+                        "title": item.get("title"),
+                        "start": item.get("start"),
+                        "entered_at": item.get("entered_at"),
+                    }
+                    new_entered.append(entry)
+                else:
+                    new_entered.append(item)
+            acc_data["entered"] = new_entered
+
+            survey_done = acc_data.pop("survey_done", [])
+            survey_dict = acc_data.setdefault("survey", {})
+            if isinstance(survey_done, list):
+                for sid in survey_done:
+                    survey_dict[str(sid)] = "done"
+    return state
+
+
 def merge_state(state: dict, today_str: str, accounts: list[str] = None) -> dict:
     if accounts is None:
         accounts = ["bjh7790", "wonju"]
-    if not isinstance(state, dict) or state.get("date") != today_str:
+    if not isinstance(state, dict):
+        state = {}
+    state = upgrade_to_v2(state)
+    if state.get("date") != today_str:
         return {
+            "version": 2,
             "date": today_str,
             "accounts": {
-                acc: {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}}
+                acc: {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}, "survey": {}}
                 for acc in accounts
             }
         }
+    state["version"] = 2
     acc_map = state.setdefault("accounts", {})
     for acc in accounts:
         if acc not in acc_map:
-            acc_map[acc] = {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}}
+            acc_map[acc] = {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}, "survey": {}}
+        else:
+            acc_map[acc].setdefault("entered", [])
+            acc_map[acc].setdefault("blocks", {"lunch": [], "evening": [], "manual": []})
+            acc_map[acc].setdefault("survey", {})
     return state
 
 
@@ -74,6 +148,8 @@ def load_state(path: Path | str, today_str: str = None) -> dict:
             data = {}
     else:
         data = {}
+    if isinstance(data, dict) and data:
+        data = upgrade_to_v2(data)
     return merge_state(data, today_str)
 
 
@@ -97,15 +173,30 @@ def save_state(state: dict, path: Path | str) -> None:
 
 
 def update_entered_state(
-    state: dict, account: str, seminar_id: int | str, block_name: str, path: Path | str = None
+    state: dict,
+    account: str,
+    seminar_id: int | str,
+    block_name: str,
+    path: Path | str = None,
+    title: str = None,
+    start: str = None,
+    entered_at: str = None,
 ) -> None:
+    state = upgrade_to_v2(state)
     sid = int(seminar_id)
     acc_map = state.setdefault("accounts", {})
     acc_data = acc_map.setdefault(
-        account, {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}}
+        account, {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}, "survey": {}}
     )
-    if sid not in acc_data["entered"]:
-        acc_data["entered"].append(sid)
+    entered_list = acc_data.setdefault("entered", [])
+    existing_ids = [item["id"] if isinstance(item, dict) else item for item in entered_list]
+    if sid not in existing_ids:
+        entered_list.append({
+            "id": sid,
+            "title": title,
+            "start": start,
+            "entered_at": entered_at,
+        })
     blocks_map = acc_data.setdefault("blocks", {})
     block_list = blocks_map.setdefault(block_name, [])
     if sid not in block_list:
@@ -241,7 +332,11 @@ def task_live_seminar(
     already_entered_set = set()
     if state and account and not ignore_state:
         acc_data = state.get("accounts", {}).get(account, {})
-        already_entered_set = set(acc_data.get("entered", []))
+        already_entered_set = {
+            item["id"] if isinstance(item, dict) else int(item)
+            for item in acc_data.get("entered", [])
+            if (isinstance(item, dict) and item.get("id") is not None) or isinstance(item, (int, str))
+        }
 
     entered: list[int] = []
     already_entered: list[int] = []

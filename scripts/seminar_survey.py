@@ -49,6 +49,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import common
 import doctorville
 import seminar_live
+from seminar_live import parse_dd_date, upgrade_to_v2
 import daily_runner
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -193,17 +194,29 @@ def add_missing_to_bank(bank_path: str | Path, missing: list[dict]) -> int:
 
 def pending_seminar_ids(state: dict, account: str) -> list[int]:
     """당일 입장했으나 아직 설문하지 않은 세미나 ID 목록."""
-    acc = (state or {}).get("accounts", {}).get(account, {})
-    done = set(acc.get("survey_done", []))
-    return [sid for sid in acc.get("entered", []) if sid not in done]
+    if not isinstance(state, dict):
+        return []
+    state = upgrade_to_v2(state)
+    acc = state.get("accounts", {}).get(account, {})
+    survey_map = acc.get("survey", {})
+    survey_done_list = acc.get("survey_done", [])
+    pending = []
+    for item in acc.get("entered", []):
+        sid = item["id"] if isinstance(item, dict) else int(item)
+        sid_str = str(sid)
+        if sid_str not in survey_map and sid not in survey_done_list and int(sid) not in survey_done_list:
+            pending.append(sid)
+    return pending
 
 
 def mark_survey_done(state: dict, account: str, seminar_id: int | str, path=None) -> None:
+    if not isinstance(state, dict):
+        return
+    state = upgrade_to_v2(state)
     acc = state.setdefault("accounts", {}).setdefault(account, {})
-    done = acc.setdefault("survey_done", [])
-    sid = int(seminar_id)
-    if sid not in done:
-        done.append(sid)
+    survey = acc.setdefault("survey", {})
+    sid_str = str(seminar_id)
+    survey[sid_str] = "done"
     if path is not None:
         seminar_live.save_state(state, path)
 

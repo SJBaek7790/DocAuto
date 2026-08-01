@@ -136,4 +136,4 @@ def test_mark_survey_done_is_idempotent():
     state = {"accounts": {"bjh7790": {"entered": [1]}}}
     mark_survey_done(state, "bjh7790", 1)
     mark_survey_done(state, "bjh7790", "1")
-    assert state["accounts"]["bjh7790"]["survey_done"] == [1]
+    assert state["accounts"]["bjh7790"]["survey"] == {"1": "done"}

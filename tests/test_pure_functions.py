@@ -47,7 +47,7 @@ def test_merge_state():
 
     # Same date retains state
     same_date = merge_state({"date": "2026-07-25", "accounts": {"bjh7790": {"entered": [123], "blocks": {"lunch": [123], "evening": [], "manual": []}}}}, "2026-07-25")
-    assert same_date["accounts"]["bjh7790"]["entered"] == [123]
+    assert same_date["accounts"]["bjh7790"]["entered"] == [{"id": 123, "title": None, "start": None, "entered_at": None}]
 
 def test_should_notify():
     # Actual structure from seminar_live.py

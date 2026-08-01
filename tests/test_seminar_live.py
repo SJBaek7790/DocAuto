@@ -9,7 +9,7 @@ def test_load_and_save_state(tmp_path):
     save_state(initial, state_file)
     
     loaded = load_state(state_file, "2026-07-25")
-    assert loaded["accounts"]["bjh7790"]["entered"] == [5457]
+    assert loaded["accounts"]["bjh7790"]["entered"] == [{"id": 5457, "title": None, "start": None, "entered_at": None}]
 
 def test_update_entered_state(tmp_path):
     state_file = tmp_path / "seminar_entered.json"
@@ -17,7 +17,7 @@ def test_update_entered_state(tmp_path):
     
     update_entered_state(state, "bjh7790", 5460, "lunch", state_file)
     reloaded = load_state(state_file, "2026-07-25")
-    assert 5460 in reloaded["accounts"]["bjh7790"]["entered"]
+    assert any(e.get("id") == 5460 for e in reloaded["accounts"]["bjh7790"]["entered"])
     assert 5460 in reloaded["accounts"]["bjh7790"]["blocks"]["lunch"]
 
 def test_determine_block_name():
