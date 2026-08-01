@@ -27,6 +27,8 @@ from pathlib import Path
 import common
 import notify
 
+send_telegram = notify.send_telegram
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 PYTHON = sys.executable
 
@@ -90,20 +92,40 @@ def _short(text: str, limit: int = 200) -> str:
     return notify._short(text, limit)
 
 
+FAIL_STATUSES = {"failed", "unverified", "blocked"}
+
+
+def evaluate_exit_code(results: dict) -> int:
+    """results 내에 failed, unverified, blocked 상태가 있으면 1, 없으면 0을 반환한다."""
+    def _is_failed(val):
+        if isinstance(val, dict):
+            if val.get("status") in FAIL_STATUSES:
+                return True
+            for v in val.values():
+                if _is_failed(v):
+                    return True
+        elif isinstance(val, list):
+            for item in val:
+                if _is_failed(item):
+                    return True
+        return False
+
+    return 1 if _is_failed(results) else 0
+
 
 def build_execution_plan(creds: dict) -> dict:
     """credentials dict에서 실행할 스크립트 플랜을 동적으로 생성한다."""
     plan = {}
-    plan["keymedi"] = {
-        "script": "keymedi.py",
-        "args": [],
-    }
     for acc in common.list_accounts(creds, site="doctorville"):
         plan[f"doctorville_{acc}"] = {
             "script": "doctorville.py",
             "args": ["--account", acc],
             "timeout": 240,
         }
+    plan["keymedi"] = {
+        "script": "keymedi.py",
+        "args": [],
+    }
     plan["hmp"] = {
         "script": "hmp.py",
         "args": [],
@@ -178,23 +200,7 @@ def main():
     else:
         print("\n[telegram] 건너뜀 (--no-telegram)")
 
-    failed = False
-    for key, r in results.items():
-        if isinstance(r, dict):
-            if r.get("status") == "failed":
-                failed = True
-                break
-            for sub in ["attend", "quiz", "seminar"]:
-                if r.get(sub, {}).get("status") == "failed":
-                    failed = True
-                    break
-            if r.get("comment", {}).get("status") == "failed":
-                failed = True
-                break
-            if r.get("post", {}).get("status") == "failed":
-                failed = True
-                break
-
+    failed = evaluate_exit_code(results) != 0
     sys.exit(1 if failed else 0)
 
 

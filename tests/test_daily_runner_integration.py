@@ -1,19 +1,30 @@
 import pytest
-from daily_runner import build_execution_plan
+import daily_runner
+from daily_runner import build_execution_plan, evaluate_exit_code
+import notify
 from notify import should_send
+
+
+def test_send_telegram_export():
+    assert hasattr(daily_runner, "send_telegram")
+    assert daily_runner.send_telegram == notify.send_telegram
+
 
 def test_build_execution_plan():
     creds = {
         "telegram": {},
         "bjh7790": {"doctorville": {}, "hmp": {}, "keymedi": {}},
-        "wonju": {"doctorville": {}}
+        "wonju": {"doctorville": {}},
     }
     plan = build_execution_plan(creds)
-    assert "keymedi" in plan
-    assert "doctorville_bjh7790" in plan
-    assert "doctorville_wonju" in plan
-    assert "hmp" in plan
-    assert "precheck_quiz" in plan
+    keys = list(plan.keys())
+
+    # Doctorville accounts first, then keymedi, then hmp, then precheck_quiz
+    assert keys[0] == "doctorville_bjh7790"
+    assert keys[1] == "doctorville_wonju"
+    assert keys[2] == "keymedi"
+    assert keys[3] == "hmp"
+    assert keys[4] == "precheck_quiz"
 
     # Verify script and args detail
     assert plan["keymedi"]["script"] == "keymedi.py"
@@ -27,17 +38,39 @@ def test_build_execution_plan():
     assert "--task" in plan["precheck_quiz"]["args"]
     assert "precheck_quiz" in plan["precheck_quiz"]["args"]
 
+
+def test_exit_code_evaluation():
+    # Success / quiet statuses return 0
+    success_results = {
+        "keymedi": {"status": "already_done"},
+        "hmp": {"status": "success", "roulette": [{"status": "no_target"}]},
+        "doctorville_bjh7790": {"attend": {"status": "success"}, "quiz": {"status": "already_done"}},
+        "precheck_quiz": {"status": "no_answer"},
+    }
+    assert evaluate_exit_code(success_results) == 0
+
+    # failed status returns 1
+    failed_results = {"keymedi": {"status": "failed", "message": "error"}}
+    assert evaluate_exit_code(failed_results) == 1
+
+    # unverified status returns 1
+    unverified_results = {"doctorville_bjh7790": {"attend": {"status": "unverified", "message": "button missing"}}}
+    assert evaluate_exit_code(unverified_results) == 1
+
+    # blocked status returns 1
+    blocked_results = {"hmp": {"status": "success", "roulette": [{"status": "blocked", "message": "captchas"}]}}
+    assert evaluate_exit_code(blocked_results) == 1
+
+
 def test_should_send_actionable_zero_calls():
     quiet_results = {
         "keymedi": {"status": "already_done"},
         "hmp": {
             "status": "already_done",
-            "roulette": [{"status": "failed", "message": "START 버튼이 표시되지 않음"}]
+            "roulette": [{"status": "failed", "message": "START 버튼이 표시되지 않음"}],
         },
-        "doctorville_bjh7790": {
-            "attend": {"status": "already_done"},
-            "quiz": {"status": "already_done"}
-        },
-        "precheck_quiz": {"status": "already_done"}
+        "doctorville_bjh7790": {"attend": {"status": "already_done"}, "quiz": {"status": "already_done"}},
+        "precheck_quiz": {"status": "already_done"},
     }
     assert should_send(quiet_results, "actionable") is False
+
