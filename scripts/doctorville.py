@@ -38,11 +38,13 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 import common
+import notify
 
 DOCTORVILLE_BASE    = "https://www.doctorville.co.kr"
 ATTEND_URL          = f"{DOCTORVILLE_BASE}/event/attend"
@@ -566,7 +568,7 @@ def task_quiz(page, creds: dict) -> dict:
         if matched_val is None:
             bank_missing.append({
                 "question": q_text,
-                "choices": choices_per_q[i],
+                "options": choices_per_q[i],
                 "recorded_answer_not_matched": answer_text,
             })
         else:
@@ -597,9 +599,9 @@ def task_quiz(page, creds: dict) -> dict:
 
     if missing or not source:
         result["status"] = "no_answer"
+        result["questions"] = missing
         result["message"] = (
-            f"'{product}' 퀴즈: {len(missing)}개 문항 정답 매칭 실패 — quiz_answers.json에 문항/보기 텍스트 그대로 추가 필요.\n"
-            + json.dumps(missing, ensure_ascii=False)
+            f"'{product}' 퀴즈: {len(missing)}개 문항 정답 매칭 실패 — quiz_answers.json에 문항/보기 텍스트 그대로 추가 필요."
         )
         close_btn = quiz_layer.locator(".btn_cancel, .btn_close").first
         if close_btn.is_visible():
@@ -931,6 +933,14 @@ def main():
         print(json.dumps(all_results[accounts[0]], ensure_ascii=False, indent=2))
     else:
         print(json.dumps(all_results, ensure_ascii=False, indent=2))
+
+    if args.task == "seminar":
+        notify_level = os.environ.get("NOTIFY_LEVEL", "all")
+        date_str = datetime.now(common.KST).strftime("%Y-%m-%d")
+        if notify.should_send(all_results, notify_level):
+            msg = notify.build_message(all_results, notify_level, date_str)
+            if msg:
+                notify.send_telegram(msg, credentials_path=credentials_path)
 
     sys.exit(1 if failed else 0)
 
