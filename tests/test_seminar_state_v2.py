@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 from common import KST
-from seminar_live import parse_dd_date, upgrade_to_v2, load_state
+from seminar_live import parse_dd_date, upgrade_to_v2, load_state, update_entered_state
 
 def test_parse_dd_date_valid():
     start_dt, end_dt = parse_dd_date("2026-08-10(월) 13:00 ~ 14:00")
@@ -48,3 +48,30 @@ def test_load_state_v1_file(tmp_path):
         {"id": 100, "title": None, "start": None, "entered_at": None}
     ]
     assert loaded["accounts"]["bjh7790"]["survey"] == {"100": "done"}
+
+def test_update_entered_state_with_metadata(tmp_path):
+    state_file = tmp_path / "seminar_entered.json"
+    state_file.write_text('{"version":2,"date":"2026-08-01","accounts":{"bjh7790":{"entered":[],"survey":{}}}}', encoding="utf-8")
+
+    state = load_state(state_file, "2026-08-01")
+    update_entered_state(
+        state, "bjh7790", 5473, "lunch", state_file,
+        title="호흡기 심포지엄", start="2026-08-10(월) 13:00 ~ 14:00", entered_at="2026-08-10T13:05:00+09:00"
+    )
+    loaded = load_state(state_file, "2026-08-01")
+    entered_item = loaded["accounts"]["bjh7790"]["entered"][0]
+    assert entered_item["id"] == 5473
+    assert entered_item["title"] == "호흡기 심포지엄"
+    assert entered_item["start"] == "2026-08-10(월) 13:00 ~ 14:00"
+    assert entered_item["entered_at"] == "2026-08-10T13:05:00+09:00"
+
+def test_task_live_seminar_no_target(monkeypatch):
+    from unittest.mock import MagicMock
+    from seminar_live import task_live_seminar
+    mock_page = MagicMock()
+    monkeypatch.setattr("seminar_live.get_live_seminar_info", lambda p: [], raising=False)
+    monkeypatch.setattr("seminar_live.get_live_seminar_ids", lambda p: [], raising=False)
+
+    res = task_live_seminar(mock_page, stay_seconds=20, account="bjh7790")
+    assert res["status"] == "no_target"
+

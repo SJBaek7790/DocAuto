@@ -190,8 +190,18 @@ def update_entered_state(
         account, {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}, "survey": {}}
     )
     entered_list = acc_data.setdefault("entered", [])
-    existing_ids = [item["id"] if isinstance(item, dict) else item for item in entered_list]
-    if sid not in existing_ids:
+    found = False
+    for item in entered_list:
+        if isinstance(item, dict) and item.get("id") == sid:
+            found = True
+            if title is not None:
+                item["title"] = title
+            if start is not None:
+                item["start"] = start
+            if entered_at is not None:
+                item["entered_at"] = entered_at
+            break
+    if not found:
         entered_list.append({
             "id": sid,
             "title": title,
@@ -219,26 +229,47 @@ def determine_block_name(block_arg: str) -> str:
 # 라이브 세미나 목록 추출
 # ---------------------------------------------------------------------------
 
-def get_live_seminar_ids(page) -> list[str]:
-    """/seminar/main에서 현재 '입장하기'가 뜬 세미나의 seminarId 목록을 순서·중복없이 반환."""
+def get_live_seminar_info(page) -> list[dict]:
+    """/seminar/main에서 현재 '입장하기'가 뜬 세미나의 [{"id": "5473", "title": "..."}, ...] 목록을 순서·중복없이 반환."""
     page.goto(doctorville.SEMINAR_MAIN_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(1500)  # SPA 렌더링 대기 (task_seminar와 동일 패턴)
 
-    raw_ids = page.evaluate("""
+    items = page.evaluate("""
         () => Array.from(document.querySelectorAll('span.ico_enter')).map(span => {
             const aEl = span.closest('a.list_detail');
             if (!aEl) return null;
-            try { return new URL(aEl.href).searchParams.get('seminarId'); } catch(e) { return null; }
+            let sid = null;
+            try { sid = new URL(aEl.href).searchParams.get('seminarId'); } catch(e) { return null; }
+            if (!sid) return null;
+
+            const titEl = aEl.querySelector('.tit, dt, .title, strong');
+            let title = titEl ? titEl.innerText.trim() : '';
+            if (!title) {
+                const lines = (aEl.innerText || '').split('\\n').map(l => l.trim()).filter(Boolean);
+                const filtered = lines.filter(l =>
+                    !/^(입장|신청|방송중|마감|신청완료|사전신청)/.test(l) &&
+                    !/\\d{2}:\\d{2}/.test(l) &&
+                    !/^(연자|정원):/.test(l)
+                );
+                title = filtered.length > 0 ? filtered[0] : '';
+            }
+            return { id: sid, title: title };
         }).filter(Boolean)
     """)
 
     seen = set()
     deduped = []
-    for sid in raw_ids:
+    for item in items:
+        sid = item["id"]
         if sid not in seen:
             seen.add(sid)
-            deduped.append(sid)
+            deduped.append(item)
     return deduped
+
+
+def get_live_seminar_ids(page) -> list[str]:
+    """/seminar/main에서 현재 '입장하기'가 뜬 세미나의 seminarId 목록을 순서·중복없이 반환."""
+    return [item["id"] for item in get_live_seminar_info(page)]
 
 
 # ---------------------------------------------------------------------------
@@ -251,13 +282,33 @@ def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
     page.goto(detail_url, wait_until="domcontentloaded")
     page.wait_for_timeout(1000)
 
+    date_text = page.evaluate("""
+        () => {
+            const dd = document.querySelector('dd.date');
+            return dd ? dd.innerText.trim() : '';
+        }
+    """)
+    start_dt, _ = parse_dd_date(date_text)
+    start_str = date_text if start_dt is not None else None
+    entered_at_str = datetime.now(common.KST).isoformat()
+
     btn = page.locator("a.btn_bn").first
     if btn.count() == 0 or not btn.is_visible():
-        return {"status": "skipped", "message": f"세미나 {seminar_id}: 입장버튼(a.btn_bn) 없음"}
+        return {
+            "status": "skipped",
+            "message": f"세미나 {seminar_id}: 입장버튼(a.btn_bn) 없음",
+            "start": start_str,
+            "entered_at": entered_at_str,
+        }
 
     btn_text = btn.inner_text().strip()
     if "입장" not in btn_text:
-        return {"status": "skipped", "message": f"세미나 {seminar_id}: 버튼 텍스트 '{btn_text}' (입장불가)"}
+        return {
+            "status": "skipped",
+            "message": f"세미나 {seminar_id}: 버튼 텍스트 '{btn_text}' (입장불가)",
+            "start": start_str,
+            "entered_at": entered_at_str,
+        }
 
     # popup 이벤트 수신 준비 후 클릭
     try:
@@ -269,6 +320,8 @@ def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
             "status": "failed",
             "message": f"세미나 {seminar_id}: 팝업창(expect_popup) 열림 타임아웃",
             "screenshot": save_screenshot(page, f"popup_fail_{seminar_id}"),
+            "start": start_str,
+            "entered_at": entered_at_str,
         }
 
     try:
@@ -283,7 +336,13 @@ def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
     except Exception:
         pass
 
-    return {"status": "success", "verified_by": "popup_acquired", "message": f"세미나 {seminar_id}: {stay_seconds}초 체류 완료"}
+    return {
+        "status": "success",
+        "verified_by": "popup_acquired",
+        "message": f"세미나 {seminar_id}: {stay_seconds}초 체류 완료",
+        "start": start_str,
+        "entered_at": entered_at_str,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -309,9 +368,9 @@ def task_live_seminar(
         "count": 0,
     }
 
-    seminar_ids = get_live_seminar_ids(page)
-    if not seminar_ids:
-        result["status"] = "success"
+    items = get_live_seminar_info(page)
+    if not items:
+        result["status"] = "no_target"
         result["message"] = "입장 가능한 라이브 세미나 없음."
         return result
 
@@ -329,7 +388,9 @@ def task_live_seminar(
     skipped: list[int] = []
     failed_list: list[dict] = []
 
-    for sid in seminar_ids:
+    for item in items:
+        sid = item["id"]
+        title = item.get("title") or None
         sid_int = int(sid)
         if sid_int in already_entered_set:
             already_entered.append(sid_int)
@@ -343,8 +404,19 @@ def task_live_seminar(
         r = enter_and_wait(page, sid, stay_seconds)
         if r["status"] == "success":
             entered.append(sid_int)
+            start_val = r.get("start")
+            entered_at_val = r.get("entered_at") or datetime.now(common.KST).isoformat()
             if state and account and state_file:
-                update_entered_state(state, account, sid_int, block_name, state_file)
+                update_entered_state(
+                    state,
+                    account,
+                    sid_int,
+                    block_name,
+                    state_file,
+                    title=title,
+                    start=start_val,
+                    entered_at=entered_at_val,
+                )
         elif r["status"] == "skipped":
             skipped.append(sid_int)
         else:
@@ -520,9 +592,16 @@ def main():
     )
     args = parser.parse_args()
 
-    accounts = ["bjh7790", "wonju"] if args.account == "all" else [args.account]
     credentials_path = Path(args.credentials)
     state_file = Path(args.state_file)
+
+    creds = common.read_credentials(credentials_path) if credentials_path.exists() else {}
+    if args.account == "all":
+        accounts = common.list_accounts(creds, "doctorville")
+        if not accounts:
+            accounts = ["bjh7790", "wonju"]
+    else:
+        accounts = [args.account]
 
     kst = timezone(timedelta(hours=9))
     today_str = datetime.now(kst).strftime("%Y-%m-%d")
