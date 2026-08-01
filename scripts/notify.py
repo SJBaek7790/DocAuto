@@ -1,0 +1,217 @@
+"""Centralized Notification Gate module for DocAuto.
+
+Provides pure severity evaluation, message formatting (all / actionable modes),
+Telegram notification dispatch, and CLI interface.
+"""
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+SEVERITY = {
+    "success": "ok",
+    "unverified": "alert",
+    "already_done": "quiet",
+    "skipped": "quiet",
+    "no_target": "quiet",
+    "not_ready": "quiet",
+    "closed": "quiet",
+    "no_answer": "action",
+    "incomplete_bank": "action",
+    "failed": "alert",
+    "blocked": "alert",
+}
+
+# Severity hierarchy: alert (3) > action (2) > ok (1) > quiet (0)
+SEVERITY_ORDER = {"quiet": 0, "ok": 1, "action": 2, "alert": 3}
+
+
+def _node_sev(node: dict) -> str:
+    if "status" in node:
+        st = node["status"]
+        if st == "failed" and node.get("message") == "START 버튼이 표시되지 않음":
+            return "quiet"
+        if st == "success" and not node.get("verified_by"):
+            return "alert"
+        return SEVERITY.get(st, "alert")
+    return "quiet"
+
+
+def severity_of(val) -> str:
+    """Traverse a dictionary or list structure recursively to calculate maximum severity."""
+    if isinstance(val, dict):
+        max_sev = _node_sev(val)
+        for k, v in val.items():
+            if k == "status":
+                continue
+            sub_sev = severity_of(v)
+            if SEVERITY_ORDER.get(sub_sev, 0) > SEVERITY_ORDER.get(max_sev, 0):
+                max_sev = sub_sev
+        return max_sev
+    elif isinstance(val, list):
+        max_sev = "quiet"
+        for item in val:
+            sub_sev = severity_of(item)
+            if SEVERITY_ORDER.get(sub_sev, 0) > SEVERITY_ORDER.get(max_sev, 0):
+                max_sev = sub_sev
+        return max_sev
+    return "quiet"
+
+
+def should_send(results: dict, level: str) -> bool:
+    """Determine whether notification should be sent based on level setting."""
+    if level == "all":
+        return True
+    if level == "actionable":
+        sev = severity_of(results)
+        return SEVERITY_ORDER.get(sev, 0) >= SEVERITY_ORDER["action"]
+    return True
+
+
+def _short(text: str, limit: int = 200) -> str:
+    text = (text or "").strip()
+    first_line = text.splitlines()[0] if text else text
+    if len(first_line) > limit:
+        first_line = first_line[:limit] + "…"
+    return first_line
+
+
+def _format_all_summary(results: dict, date_str: str) -> str:
+    lines = [f"📋 *일일 자동화 결과* ({date_str})", ""]
+
+    def _render_dict(d: dict, indent: int = 0):
+        prefix = "  " * indent
+        for k, v in d.items():
+            if k in ("status", "points", "message", "verified_by", "product", "quiz_id"):
+                continue
+            if isinstance(v, dict):
+                if "status" in v:
+                    st = v["status"]
+                    pts = f" +{v['points']}P" if v.get("points") else ""
+                    prod = f" — {v['product']}" if v.get("product") else ""
+                    lines.append(f"{prefix}*{k}*: {st}{prod}{pts}")
+                    if v.get("message") and st not in ("success", "already_done"):
+                        lines.append(f"{prefix}  └ {_short(v['message'])}")
+                else:
+                    lines.append(f"{prefix}*{k}*:")
+                _render_dict(v, indent + 1)
+            elif isinstance(v, list):
+                lines.append(f"{prefix}*{k}*:")
+                for idx, item in enumerate(v):
+                    if isinstance(item, dict):
+                        _render_dict({f"[{idx}]": item}, indent + 1)
+
+    for k, v in results.items():
+        if isinstance(v, dict):
+            if "status" in v:
+                st = v["status"]
+                pts = f" +{v['points']}P" if v.get("points") else ""
+                prod = f" — {v['product']}" if v.get("product") else ""
+                lines.append(f"*{k}*: {st}{prod}{pts}")
+                if v.get("message") and st not in ("success", "already_done"):
+                    lines.append(f"  └ {_short(v['message'])}")
+                _render_dict(v, 1)
+            else:
+                lines.append(f"*{k}*:")
+                _render_dict(v, 1)
+        else:
+            lines.append(f"*{k}*: {v}")
+
+    return "\n".join(lines)
+
+
+def _format_actionable_summary(results: dict, date_str: str) -> str:
+    lines = [f"❗ DocAuto ({date_str})", ""]
+    has_items = False
+
+    def _traverse(prefix: str, data):
+        nonlocal has_items
+        if isinstance(data, dict):
+            if "status" in data:
+                sev = _node_sev(data)
+                if SEVERITY_ORDER.get(sev, 0) >= SEVERITY_ORDER["action"]:
+                    has_items = True
+                    status = data["status"]
+                    msg = _short(data.get("message", ""))
+                    prod = f" — {data['product']}" if data.get("product") else ""
+                    header_line = f"*{prefix}*: {status}{prod}"
+                    if msg:
+                        header_line += f" ({msg})"
+                    lines.append(header_line.strip())
+
+                    if status == "no_answer" and data.get("product"):
+                        lines.append(f"  → quiz_answers.json에 {data['product']} 정답 추가")
+                    if status == "incomplete_bank":
+                        lines.append("  → survey_answers.json 빈 값 추가")
+                    if "questions" in data:
+                        lines.append(f"  {json.dumps(data['questions'], ensure_ascii=False)}")
+
+            for k, v in data.items():
+                if k in ("status", "message", "product", "verified_by", "points", "questions"):
+                    continue
+                if isinstance(v, (dict, list)):
+                    sub_prefix = f"{prefix} > {k}" if prefix else k
+                    _traverse(sub_prefix, v)
+        elif isinstance(data, list):
+            for idx, item in enumerate(data):
+                sub_prefix = f"{prefix}[{idx}]"
+                _traverse(sub_prefix, item)
+
+    _traverse("", results)
+    return "\n".join(lines) if has_items else ""
+
+
+def build_message(results: dict, level: str, date_str: str) -> str:
+    """Build summary message in specified level format."""
+    if level == "all":
+        return _format_all_summary(results, date_str)
+    elif level == "actionable":
+        return _format_actionable_summary(results, date_str)
+    return _format_all_summary(results, date_str)
+
+
+TELEGRAM_MAX_LEN = 4096
+
+
+def send_telegram(text: str, bot_token: str = "", chat_id: str = "") -> bool:
+    """Send Telegram message via Telegram Bot API."""
+    if not text:
+        return True
+
+    token = bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    cid = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+
+    if not token or not cid:
+        print("[telegram] 토큰/chat_id 없음", file=sys.stderr)
+        return False
+
+    if len(text) > TELEGRAM_MAX_LEN:
+        text = text[: TELEGRAM_MAX_LEN - 20] + "\n…(생략)"
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({"chat_id": cid, "text": text, "parse_mode": "Markdown"}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except Exception as e:
+        print(f"[telegram] 전송 실패: {e}", file=sys.stderr)
+        return False
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Notification Gate CLI")
+    parser.add_argument("--level", choices=["all", "actionable"], default="all")
+    args = parser.parse_args()
+    print(f"Notification gate initialized with level: {args.level}")
+
+
+if __name__ == "__main__":
+    main()
