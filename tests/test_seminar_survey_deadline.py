@@ -1,13 +1,16 @@
 from datetime import datetime
 import json
+from unittest.mock import MagicMock
 from common import KST
 import seminar_live
+import seminar_survey
 from seminar_survey import (
     evaluate_survey_cutoff,
     get_survey_cutoff,
     run_survey,
     run_survey_for_item,
     mark_survey_status,
+    rollup_account_status,
 )
 
 
@@ -161,4 +164,44 @@ def test_mark_survey_status_closed():
     }
     mark_survey_status(state, "bjh7790", 5473, "closed")
     assert state["accounts"]["bjh7790"]["survey"]["5473"] == "closed"
+
+
+def test_seminar_survey_imports_os():
+    assert hasattr(seminar_survey, "os") is True
+
+
+def test_rollup_account_status():
+    assert rollup_account_status([]) == "no_target"
+    assert rollup_account_status(["not_ready", "not_ready"]) == "not_ready"
+    assert rollup_account_status(["closed", "closed"]) == "closed"
+    assert rollup_account_status(["already_done", "already_done"]) == "already_done"
+
+
+def test_run_survey_incomplete_bank_questions_payload(tmp_path, monkeypatch):
+    bank_file = tmp_path / "survey_answers.json"
+    bank_file.write_text("{}", encoding="utf-8")
+
+    mock_survey_page = MagicMock()
+    mock_survey_page.is_closed.return_value = False
+
+    monkeypatch.setattr("seminar_survey.open_survey", lambda page, sid: (mock_survey_page, ""))
+    monkeypatch.setattr("seminar_survey.read_questions", lambda p: [
+        {
+            "question": "[퀴즈] 미등록 질문",
+            "kind": "choice",
+            "name": "q1",
+            "options": [{"text": "보기1"}, {"text": "보기2"}],
+        }
+    ])
+
+    res = run_survey(MagicMock(), 5473, bank_path=bank_file)
+    assert res["status"] == "incomplete_bank"
+    assert "questions" in res
+    assert res["questions"] == [
+        {
+            "question": "미등록 질문",
+            "options": ["1. 보기1", "2. 보기2"],
+        }
+    ]
+
 

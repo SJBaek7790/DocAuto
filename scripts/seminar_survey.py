@@ -39,6 +39,7 @@ DOM 근거 (2026-07-27 실측):
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone, timedelta
@@ -286,6 +287,27 @@ def mark_survey_done(state: dict, account: str, seminar_id: int | str, path=None
     mark_survey_status(state, account, seminar_id, "done", path)
 
 
+def rollup_account_status(statuses: list[str]) -> str:
+    """Compute top-level account survey status from individual survey statuses."""
+    if not statuses:
+        return "no_target"
+    if "failed" in statuses:
+        return "failed"
+    if "unverified" in statuses:
+        return "unverified"
+    if "incomplete_bank" in statuses:
+        return "incomplete_bank"
+    if "success" in statuses:
+        return "success"
+    if "already_done" in statuses:
+        return "already_done"
+    if "not_ready" in statuses:
+        return "not_ready"
+    if "closed" in statuses:
+        return "closed"
+    return statuses[0]
+
+
 
 # ---------------------------------------------------------------------------
 # 브라우저 동작
@@ -485,6 +507,7 @@ def run_survey(
                 added = add_missing_to_bank(bank_path, missing)
                 result["status"] = "incomplete_bank"
                 result["missing"] = missing
+                result["questions"] = missing
                 prefix = f"[{title}] " if title else ""
                 result["message"] = (
                     f"{prefix}{pages_done + 1}페이지에 미등록 문항 {len(missing)}건 — 제출하지 않음"
@@ -570,7 +593,7 @@ def run_account(
     state: dict = None,
     state_file: Path = None,
 ) -> dict:
-    output = {"site": "doctorville_survey", "account": account, "status": "skipped", "surveys": []}
+    output = {"site": "doctorville_survey", "account": account, "status": "no_target", "surveys": []}
 
     if not seminar_ids:
         output["message"] = "설문 대상 세미나 없음."
@@ -609,11 +632,11 @@ def run_account(
                     mark_survey_status(state, account, sid, "closed", state_file)
 
             statuses = [r["status"] for r in output["surveys"]]
-            output["status"] = "failed" if "failed" in statuses else "success"
+            output["status"] = rollup_account_status(statuses)
             output["message"] = (
                 f"성공 {statuses.count('success')}건, 미등록 {statuses.count('incomplete_bank')}건, "
                 f"마감 {statuses.count('closed')}건, 미오픈 {statuses.count('not_ready')}건, "
-                f"설문없음 {statuses.count('no_questions')}건, 실패 {statuses.count('failed')}건."
+                f"실패 {statuses.count('failed')}건."
             )
         except Exception as e:
             output["status"] = "failed"
@@ -625,41 +648,7 @@ def run_account(
     return output
 
 
-# ---------------------------------------------------------------------------
-# 텔레그램 포맷
-# ---------------------------------------------------------------------------
 
-STATUS_LABEL = {
-    "success": "✅",
-    "incomplete_bank": "❓",
-    "not_ready": "⏳",
-    "closed": "🔒",
-    "no_questions": "⏭️",
-    "already_done": "☑️",
-    "skipped": "⏭️",
-    "failed": "❌",
-}
-
-
-def format_telegram_message(results: dict, date_str: str) -> str:
-    lines = [f"📝 *세미나 설문조사* ({date_str})", ""]
-    missing_all = []
-    for account, r in results.items():
-        emoji = STATUS_LABEL.get(r.get("status", "failed"), "❓")
-        lines.append(f"*{account}* {emoji} {r.get('message', '')}")
-        for s in r.get("surveys", []):
-            e = STATUS_LABEL.get(s.get("status", "failed"), "❓")
-            lines.append(f"  세미나 {s['seminarId']}: {e} {s.get('message', '')}")
-            for m in s.get("missing", []):
-                missing_all.append(m)
-    if missing_all:
-        lines.append("")
-        lines.append("⚠️ *설문 정답 추가 필요* (`survey_answers.json`)")
-        for m in missing_all:
-            lines.append(f"• {m['question']}")
-            for o in m["options"]:
-                lines.append(f"    - {o}")
-    return "\n".join(lines)
 
 
 def main():
