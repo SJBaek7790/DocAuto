@@ -120,3 +120,37 @@ venv/bin/python3 scripts/recon.py --item R3
 - **텔레그램 정답 마감:** 닥터빌 퀴즈 정답은 **15:00 KST 이전** 도착분만 그날 daily 실행에 반영된다.
 - **CI는 워킹트리가 아니라 HEAD를 돌린다.** 동작이 "옛날 코드" 같으면 `git show HEAD:<파일>`부터 확인.
 - **성공의 양성 증거 (`verified_by`):** `status: "success"`에는 항상 `verified_by`가 동반되어야 하며, 없으면 `unverified`(`alert`)로 강등된다.
+
+---
+
+## 미결 항목 (2026-08-01 배포 시점)
+
+### ① `actionable` 전환 전에 고칠 것 — 설문 롤업 강등
+
+`seminar_survey.run_account`의 `rollup_account_status`가 `success`를 반환할 때 계정 레벨에 `verified_by`를 세우지 않는다. 개별 설문은 `verified_by`를 갖지만 상위 노드가 없어서 `_node_sev`가 `alert`로 강등한다.
+
+```
+설문 제출 성공  -> severity alert  (actionable에서 전송됨)
+전부 not_ready  -> severity quiet  (정상)
+```
+
+시끄러운 쪽(매 런 `not_ready`)은 이미 `quiet`이라 **급하지 않다.** 첫 1달은 `NOTIFY_LEVEL=all`이라 어차피 전량 수신한다. 영향은 "설문 성공 시 알림 1건". 롤업이 `success`를 낼 때 `output["verified_by"]`를 함께 세우면 끝. **`actionable` 전환 전까지 반드시 처리한다.**
+
+### ② 정찰 R1·R2 미수집 — 증거 판정이 아직 휴리스틱
+
+`RECON=1` 환경변수로 실행해야 덤프된다. 기본 실행에는 영향 없다.
+
+| ID | 대상 | 현재 판정 방식 |
+|---|---|---|
+| R1 | 설문 완료 화면 문구 | `완료`/`감사`/`제출`/`참여`/`응답` 키워드 부분 일치 |
+| R2 | 닥터빌 출석 완료 표식 | `text=출석 완료, text=적립완료, text=출석완료` |
+
+R1은 **실제 설문 제출이 일어나야** 수집되므로 며칠 걸린다. 수집 전까지 설문이 `unverified`를 내는 것은 예상된 동작이다. 산출물은 `scripts/logs/recon_*`에 남고 artifact로만 올라간다 — **커밋 금지**(설문 페이지에 이름·소속 포함).
+
+### ③ 첫 몇 주 Actions 빨간 런은 정상
+
+`daily_runner.evaluate_exit_code`가 `failed`·`unverified`·`blocked`를 모두 exit 1로 잡는다. 양성 증거를 못 잡는 모듈이 워크플로우를 실패로 만든다.
+
+- 커밋·아티팩트 스텝은 `if: always()`라 **데이터 유실은 없다.**
+- 빨간 런 목록 = 증거 셀렉터를 다듬을 작업 목록이다.
+- 실패를 없애려고 `verified_by`를 무조건 붙이지 않는다. 증거가 없으면 `unverified`가 정답이다.
