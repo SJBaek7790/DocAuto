@@ -487,6 +487,29 @@ def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> di
                 except Exception:
                     pass
 
+            if common.is_recon_enabled():
+                try:
+                    from recon import dump_recon_data
+                    url_str = ""
+                    body_500 = ""
+                    if not survey_page.is_closed():
+                        url_str = survey_page.url
+                        try:
+                            body_text = survey_page.evaluate("() => document.body ? document.body.innerText : ''")
+                            body_500 = body_text[:500] if body_text else ""
+                        except Exception:
+                            pass
+                    r1_data = {
+                        "url": url_str,
+                        "body": body_500,
+                        "pages_done": pages_done,
+                        "seminarId": seminar_id,
+                    }
+                    dump_recon_data("R1", r1_data, page=survey_page if not survey_page.is_closed() else None)
+                except Exception:
+                    pass
+
+
             if completion_verified:
                 result["status"] = "success"
                 result["verified_by"] = "completion_screen_verified"

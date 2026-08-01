@@ -333,6 +333,13 @@ def task_attend(page, creds: dict) -> dict:
         return result
 
     btn_text = attend_btn.first.inner_text().strip()
+    r2_data = {}
+    if common.is_recon_enabled():
+        r2_data = {
+            "btn_text_before": btn_text,
+            "url_before": page.url,
+        }
+
     # "N월 N일 출석하기 ✓" 처럼 체크마크가 있으면 미완료(클릭 전)
     # 실제로 닥터빌은 버튼을 클릭하면 팝업이 뜨고 완료됨
     attend_btn.first.click()
@@ -343,6 +350,15 @@ def task_attend(page, creds: dict) -> dict:
             "text=출석 완료, text=적립완료, text=출석완료",
             timeout=DEFAULT_TIMEOUT_MS
         )
+        if common.is_recon_enabled():
+            try:
+                from recon import dump_recon_data
+                r2_data["url_after"] = page.url
+                r2_data["popup_text"] = page.evaluate("() => document.body ? document.body.innerText.slice(0, 500) : ''")
+                dump_recon_data("R2", r2_data, page=page)
+            except Exception:
+                pass
+
         # 팝업 닫기
         close_btn = page.locator('button:has-text("확인"), .btn_close, [class*="close"]')
         if close_btn.count() > 0:
