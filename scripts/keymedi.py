@@ -184,6 +184,7 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                 if confirm_btn.count() > 0:
                     confirm_btn.first.click()
                 result["status"] = "success"
+                result["verified_by"] = "modal: 출석체크가 완료되었습니다"
                 result["points"] = 100
                 result["message"] = "출석체크 완료, 100포인트 적립."
             except PlaywrightTimeoutError:

@@ -68,6 +68,13 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
 
 
+def verify_survey_completion_text(text: str) -> bool:
+    if not text:
+        return False
+    keywords = ["완료", "감사", "제출", "참여", "응답"]
+    return any(kw in text for kw in keywords)
+
+
 def normalize_question(text: str) -> str:
     """문항 텍스트를 문제은행 키 형태로 정규화한다.
 
@@ -424,9 +431,21 @@ def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> di
             questions = read_questions(survey_page)
             if not questions:
                 if pages_done:
-                    result["status"] = "success"
-                    result["pages"] = pages_done
-                    result["message"] = f"설문 제출 완료({pages_done}페이지)."
+                    page_text = ""
+                    try:
+                        if not survey_page.is_closed():
+                            page_text = survey_page.evaluate("() => document.body ? document.body.innerText : ''")
+                    except Exception:
+                        pass
+                    if verify_survey_completion_text(page_text):
+                        result["status"] = "success"
+                        result["verified_by"] = "completion_screen_verified"
+                        result["pages"] = pages_done
+                        result["message"] = f"설문 제출 완료({pages_done}페이지)."
+                    else:
+                        result["status"] = "unverified"
+                        result["pages"] = pages_done
+                        result["message"] = f"설문 제출 시도했으나 완료 화면 문구 미확인({pages_done}페이지)."
                 else:
                     st = evaluate_survey_cutoff(item, now_dt)
                     result["status"] = st
@@ -458,13 +477,27 @@ def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> di
             survey_page.wait_for_timeout(5000)
             pages_done += 1
 
+            completion_verified = False
             if not survey_page.is_closed():
                 dismiss_alerts(survey_page)
+                try:
+                    text = survey_page.evaluate("() => document.body ? document.body.innerText : ''")
+                    if verify_survey_completion_text(text):
+                        completion_verified = True
+                except Exception:
+                    pass
+
+            if completion_verified:
+                result["status"] = "success"
+                result["verified_by"] = "completion_screen_verified"
+                result["pages"] = pages_done
+                result["message"] = f"설문 제출 완료({pages_done}페이지)."
+                return result
 
             if survey_page.is_closed():
-                result["status"] = "success"
+                result["status"] = "unverified"
                 result["pages"] = pages_done
-                result["message"] = f"설문 제출 완료({pages_done}페이지, 창 자동 종료)."
+                result["message"] = f"설문 제출 창이 닫혔으나 완료 화면 문구 미확인({pages_done}페이지)."
                 return result
 
         result["message"] = f"페이지가 {MAX_PAGES}회를 넘어 중단."

@@ -304,6 +304,7 @@ def task_attend(page, creds: dict) -> dict:
         if close_btn.count() > 0:
             close_btn.first.click()
         result["status"] = "success"
+        result["verified_by"] = "attend_confirmed"
         result["points"] = 100
         result["message"] = "출석 완료, 100P 적립."
     except PlaywrightTimeoutError:
@@ -588,6 +589,7 @@ def task_quiz(page, creds: dict) -> dict:
         if ok_btn.is_visible():
             ok_btn.click()
         result["status"] = "success"
+        result["verified_by"] = ":text('정답입니다')"
         result["points"] = 500
         result["source"] = source
         if source == "legacy":
@@ -622,6 +624,7 @@ def task_quiz(page, creds: dict) -> dict:
             banner_class = page.locator("#btn_quiz_banner").get_attribute("class") or ""
             if "ico_finish" in banner_class:
                 result["status"] = "success"
+                result["verified_by"] = ":text('정답입니다')"
                 result["points"] = 500
                 result["source"] = source
                 if source == "legacy":
@@ -697,18 +700,7 @@ def task_seminar(page, creds: dict) -> dict:
         except PlaywrightTimeoutError:
             pass  # 모달 없는 세미나
 
-        # 완료 확인 — 버튼이 "신청취소"로 바뀌면 성공
-        # 타임아웃 발생 시 재진입해서 확인
-        try:
-            page.wait_for_timeout(2000)
-            btn_text = page.locator("a.btn_bn").inner_text()
-            if "신청취소" in btn_text:
-                applied.append(int(sid))
-                continue
-        except Exception:
-            pass
-
-        # 재진입해서 확인
+        # 완료 확인 — 상세 페이지 재진입 후 a.btn_bn 텍스트 = "신청취소" 검증
         page.goto(detail_url, wait_until="domcontentloaded")
         try:
             btn_text = page.locator("a.btn_bn").inner_text()
@@ -723,10 +715,11 @@ def task_seminar(page, creds: dict) -> dict:
     result["count"] = len(applied)
 
     if failed:
-        result["status"] = "failed"
-        result["message"] = f"신청 완료 {len(applied)}건, 실패 {len(failed)}건: {failed}"
+        result["status"] = "unverified"
+        result["message"] = f"신청 시도 후 상세 재확인 실패 — 완료 {len(applied)}건, 미검증 {len(failed)}건: {failed}"
     else:
         result["status"] = "success"
+        result["verified_by"] = "a.btn_bn: 신청취소"
         result["message"] = f"신청 완료 {len(applied)}건."
 
     return result

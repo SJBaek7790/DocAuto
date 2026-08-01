@@ -297,7 +297,7 @@ def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
     except Exception:
         pass
 
-    return {"status": "success", "message": f"세미나 {seminar_id}: {stay_seconds}초 체류 완료"}
+    return {"status": "success", "verified_by": "popup_acquired", "message": f"세미나 {seminar_id}: {stay_seconds}초 체류 완료"}
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +377,7 @@ def task_live_seminar(
         )
     else:
         result["status"] = "success"
+        result["verified_by"] = "popup_acquired"
         result["message"] = (
             f"입장 {len(entered)}건 완료, 이미입장 {len(already_entered)}건, 스킵 {len(skipped)}건."
         )

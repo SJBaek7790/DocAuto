@@ -67,6 +67,12 @@ MAX_COMMENT_CANDIDATES = 8
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
+def verify_comment_saved(page_content: str, nickname: str) -> bool:
+    if not page_content or not nickname:
+        return False
+    return nickname in page_content
+
+
 def load_credentials(path: Path, account: str) -> dict:
     data = common.read_credentials(path)
     if account not in data:
@@ -174,6 +180,7 @@ def _run_roulette(page, account: str) -> list[dict]:
                     break
 
             slot["status"] = "success"
+            slot["verified_by"] = f"alt: {won_msg}"
             slot["points"] = won_capsules
             slot["message"] = won_msg
 
@@ -390,8 +397,20 @@ def _comment_on_board(page, account: str, board_seq: str) -> dict:
 
         # 9. 결과 판정
         if any("저장 완료" in d for d in dialogs_seen):
-            result["status"] = "success"
-            result["message"] = f"댓글 '감사합니다' 작성 완료 (게시물 {board_seq})."
+            common.goto_with_retry(
+                page,
+                f"{COMM_DETAIL_URL}?boardSeq={board_seq}",
+                wait_until="domcontentloaded",
+                timeout_ms=DEFAULT_TIMEOUT_MS,
+            )
+            page.wait_for_timeout(2000)
+            if verify_comment_saved(page.content(), my_name):
+                result["status"] = "success"
+                result["verified_by"] = f"nickname_verified: {my_name}"
+                result["message"] = f"댓글 '감사합니다' 작성 완료 (게시물 {board_seq})."
+            else:
+                result["status"] = "unverified"
+                result["message"] = f"저장 완료 alert 수신했으나 상세 재조회에서 닉네임({my_name}) 미확인 (게시물 {board_seq})."
         elif any(kw in d for d in dialogs_seen for kw in ("오류", "에러", "실패")):
             err = next(d for d in dialogs_seen if any(kw in d for kw in ("오류", "에러", "실패")))
             result["message"] = f"서버 응답 오류: {err}"
@@ -557,6 +576,7 @@ def _run_post(page, account: str) -> dict:
         # 10. 결과 판정
         if any("작성 완료" in d for d in dialogs_seen):
             result["status"] = "success"
+            result["verified_by"] = "rtn_code_100"
             result["message"] = f"글 작성 완료: '{title}' ({day}요일)"
         elif any(kw in d for d in dialogs_seen for kw in ("오류", "에러", "실패", "인증")):
             err = next(d for d in dialogs_seen if any(kw in d for kw in ("오류", "에러", "실패", "인증")))
@@ -665,6 +685,7 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                         if confirm_btn.count() > 0:
                             confirm_btn.first.click()
                         result["status"] = "success"
+                        result["verified_by"] = "popup: 10rewardPopup"
                         result["points"] = 10
                         result["message"] = "캡슐 출석 완료, 10캡슐 적립."
                     except PlaywrightTimeoutError:
