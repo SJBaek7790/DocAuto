@@ -2,21 +2,18 @@
 """
 일일 자동화 통합 실행 스크립트.
 
-실행 순서 (2026-07-16 변경 — HMP를 마지막으로):
-  1. 키메디 출석 (bjh7790)
-  2. 닥터빌 출석+퀴즈+세미나 (bjh7790)
-  3. 닥터빌 출석+퀴즈+세미나 (wonju)
-  4. HMP 캡슐 출석 (bjh7790)
-  5. 인터엠디 오늘의 퀴즈 (bjh7790)
-  6. 결과를 텔레그램 bot으로 전송
-
-로컬(venv)·GitHub Actions(전역 pip) 양쪽에서 동일하게 동작한다.
-서브프로세스는 현재 인터프리터(sys.executable)로 실행하므로 별도 venv 경로가 필요없다.
+실행 순서:
+  1. 키메디 출석
+  2. 닥터빌 (계정별 출석+퀴즈+세미나)
+  3. HMP 캡슐 출석
+  4. 내일 닥터빌 퀴즈 사전 점검
+  5. 결과를 notify 게이트를 거쳐 텔레그램 bot으로 전송
 
 용법:
-    python3 scripts/daily_runner.py                # 로컬은 venv/bin/python3 로 호출
-    python3 scripts/daily_runner.py --headed       # 브라우저 창 표시 (디버깅)
-    python3 scripts/daily_runner.py --no-telegram  # 텔레그램 전송 건너뜀
+    python3 scripts/daily_runner.py
+    python3 scripts/daily_runner.py --headed
+    python3 scripts/daily_runner.py --no-telegram
+    python3 scripts/daily_runner.py --notify-level actionable
 """
 
 import argparse
@@ -24,19 +21,15 @@ import json
 import os
 import subprocess
 import sys
-import urllib.request
-import urllib.error
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+
+import common
+import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# 현재 실행 중인 인터프리터를 그대로 사용한다.
-# - 로컬: venv/bin/python3 로 호출 → sys.executable == venv python
-# - GitHub Actions: 전역 pip 설치 → sys.executable == 러너 python (venv 없음)
 PYTHON = sys.executable
 
-# 환경변수 우선(GitHub Actions secrets), 없으면 credentials.json에서 로드
-# 코드에 토큰을 하드코딩하지 않는다.
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -45,7 +38,7 @@ def load_telegram_credentials(credentials_path: str) -> None:
     """credentials.json에서 텔레그램 토큰/chat_id를 전역변수에 로드한다."""
     global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        return  # 환경변수로 이미 설정됨
+        return
     try:
         with open(credentials_path, "r", encoding="utf-8") as f:
             creds = json.load(f)
@@ -68,7 +61,6 @@ def run_script(script_name: str, extra_args: list[str] = None, timeout: int = 12
             timeout=timeout,
         )
         stdout = proc.stdout.strip()
-        # JSON 한 줄 (또는 마지막 JSON 블록) 추출
         for line in reversed(stdout.splitlines()):
             line = line.strip()
             if line.startswith("{"):
@@ -76,7 +68,6 @@ def run_script(script_name: str, extra_args: list[str] = None, timeout: int = 12
                     return json.loads(line)
                 except json.JSONDecodeError:
                     pass
-        # stdout 전체가 JSON인 경우 (indent=2 포맷)
         try:
             return json.loads(stdout)
         except json.JSONDecodeError:
@@ -96,149 +87,32 @@ def format_status_emoji(status: str) -> str:
 
 
 def _short(text: str, limit: int = 200) -> str:
-    """Playwright 예외 등 긴 다중행 메시지를 텔레그램 표시용으로 축약(첫 줄만, limit자 제한).
-
-    hmp.py 룰렛 실패 시 넘어오는 Playwright call log(수천 자, 여러 줄)를 그대로
-    텔레그램에 넣으면 메시지 전체가 4096자 제한을 넘어 sendMessage가 400으로
-    거부된다(2026-07-15). 상세 원인은 Actions 로그/screenshot에 남으므로
-    텔레그램에는 요약만 보낸다.
-    """
-    text = (text or "").strip()
-    first_line = text.splitlines()[0] if text else text
-    if len(first_line) > limit:
-        first_line = first_line[:limit] + "…"
-    return first_line
+    return notify._short(text, limit)
 
 
-def format_doctorville_block(label: str, dv: dict) -> list[str]:
-    """닥터빌 계정 하나의 결과를 텔레그램 라인 리스트로 변환한다.
 
-    스크립트가 통째로 실패해 attend/quiz/seminar 키가 없는 경우(예: 실행
-    예외·타임아웃·JSON 파싱 실패)에는 top-level status/message를 그대로 노출한다.
-    이 분기가 없으면 실패가 '건너뜀'으로 오표시된다.
-    """
-    lines = [f"*{label}*"]
-
-    if not any(k in dv for k in ("attend", "quiz", "seminar")):
-        e = format_status_emoji(dv.get("status", "failed"))
-        lines[0] = f"*{label}* {e}"
-        if dv.get("message"):
-            lines.append(f"  └ {dv['message']}")
-        return lines
-
-    for task_key, task_label in [("attend", "출석"), ("quiz", "퀴즈"), ("seminar", "세미나")]:
-        t = dv.get(task_key, {})
-        s = t.get("status", "skipped")
-        e = format_status_emoji(s)
-        pts = f" +{t['points']}P" if t.get("points") else ""
-        product = f" [{t['product']}]" if t.get("product") else ""
-        count = f" {t['count']}건" if t.get("count") else ""
-        detail = product or count
-        lines.append(f"  {task_label}: {e}{pts}{detail}")
-        if s in ("failed", "no_answer") and t.get("message"):
-            lines.append(f"    └ {_short(t['message'])}")
-    return lines
-
-
-def format_flat_block(label: str, r: dict, unit: str = "P") -> list[str]:
-    """keymedi/hmp 처럼 flat 한 {status, points, message} 결과를 라인으로 변환한다."""
-    e = format_status_emoji(r.get("status", "failed"))
-    pts = f" +{r['points']}{unit}" if r.get("points") else ""
-    lines = [f"*{label}* {e}{pts}"]
-    msg = r.get("message", "")
-    if msg and r.get("status") not in ("success", "already_done"):
-        lines.append(f"  └ {_short(msg)}")
-    # 룰렛 결과 (HMP 전용)
-    for slot in r.get("roulette", []):
-        # Skip expected "not eligible today" cases
-        if slot.get("status") == "failed" and slot.get("message") == "START 버튼이 표시되지 않음":
-            continue
-        re_e = format_status_emoji(slot.get("status", "failed"))
-        rpts = f" +{slot['points']}캡슐" if slot.get("points") else ""
-        lines.append(f"  🎡 룰렛: {re_e}{rpts} {_short(slot.get('message', ''))}")
-    # 댓글 결과 (HMP 전용)
-    cmt = r.get("comment", {})
-    if cmt:
-        ce = format_status_emoji(cmt.get("status", "failed"))
-        lines.append(f"  💬 댓글: {ce} {_short(cmt.get('message', ''))}")
-    # 글쓰기 결과 (HMP 전용)
-    post = r.get("post", {})
-    if post:
-        pe = format_status_emoji(post.get("status", "failed"))
-        lines.append(f"  ✏️ 글쓰기: {pe} {_short(post.get('message', ''))}")
-    return lines
-
-
-def format_telegram_message(results: dict, date_str: str) -> str:
-    lines = [f"📋 *일일 자동화 결과* ({date_str})", ""]
-
-    lines += format_flat_block("키메디 출석", results.get("keymedi", {}))
-    lines.append("")
-    lines += format_flat_block("HMP 캡슐 출석", results.get("hmp", {}), unit="캡슐")
-    lines.append("")
-    dv_b = results.get("doctorville_bjh7790", {})
-    lines += format_doctorville_block("닥터빌 (승진)", dv_b)
-
-    lines.append("")
-
-    dv_w = results.get("doctorville_wonju", {})
-    lines += format_doctorville_block("닥터빌 (원주)", dv_w)
-
-    # no_answer 안내
-    no_answer_products = []
-    for dv_result in [dv_b, dv_w]:
-        quiz = dv_result.get("quiz", {})
-        if quiz.get("status") == "no_answer" and quiz.get("product"):
-            p = quiz["product"]
-            if p not in no_answer_products:
-                no_answer_products.append(p)
-
-    if no_answer_products:
-        lines.append("")
-        lines.append("⚠️ *정답 추가 필요*")
-        for p in no_answer_products:
-            lines.append(f"  `quiz_answers.json`에 *{p}* 정답을 추가해주세요.")
-
-    return "\n".join(lines)
-
-
-TELEGRAM_MAX_LEN = 4096
-
-
-def send_telegram(text: str) -> bool:
-    """텔레그램 Bot API로 메시지를 전송한다. 성공 시 True.
-
-    Telegram sendMessage의 text는 4096자 제한이 있고 초과 시 400 Bad Request로
-    거부된다(2026-07-15 실제 발생 — hmp.py 룰렛 실패 시 Playwright의 상세
-    call log가 그대로 메시지에 섞여 제한을 넘김). format 단계에서 _short()로
-    각 메시지를 축약하지만, 예상 못한 이유로 다시 길어질 경우를 대비해 여기서도
-    안전망으로 한 번 더 자른다.
-    """
-    if len(text) > TELEGRAM_MAX_LEN:
-        text = text[: TELEGRAM_MAX_LEN - 20] + "\n…(생략, Actions 로그 참조)"
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = json.dumps({
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        print(f"[telegram] 전송 실패: HTTP {e.code} {body}", file=sys.stderr)
-        return False
-    except urllib.error.URLError as e:
-        print(f"[telegram] 전송 실패: {e}", file=sys.stderr)
-        return False
+def build_execution_plan(creds: dict) -> dict:
+    """credentials dict에서 실행할 스크립트 플랜을 동적으로 생성한다."""
+    plan = {}
+    plan["keymedi"] = {
+        "script": "keymedi.py",
+        "args": [],
+    }
+    for acc in common.list_accounts(creds, site="doctorville"):
+        plan[f"doctorville_{acc}"] = {
+            "script": "doctorville.py",
+            "args": ["--account", acc],
+            "timeout": 240,
+        }
+    plan["hmp"] = {
+        "script": "hmp.py",
+        "args": [],
+    }
+    plan["precheck_quiz"] = {
+        "script": "doctorville.py",
+        "args": ["--task", "precheck_quiz"],
+    }
+    return plan
 
 
 def main():
@@ -250,9 +124,25 @@ def main():
         default=str(SCRIPT_DIR.parent / "credentials.json"),
         help="credentials.json 경로",
     )
+    parser.add_argument(
+        "--notify-level",
+        choices=["all", "actionable"],
+        default=None,
+        help="텔레그램 알림 레벨 (all, actionable)",
+    )
     args = parser.parse_args()
 
-    load_telegram_credentials(args.credentials)
+    notify_level = args.notify_level or os.environ.get("NOTIFY_LEVEL") or "all"
+
+    credentials_path = Path(args.credentials)
+    creds = {}
+    if credentials_path.exists():
+        try:
+            creds = common.read_credentials(credentials_path)
+        except Exception as e:
+            print(f"[daily_runner] credentials 로드 실패: {e}", file=sys.stderr)
+
+    load_telegram_credentials(str(credentials_path))
 
     extra = []
     if args.headed:
@@ -260,59 +150,44 @@ def main():
     if args.credentials:
         extra += ["--credentials", args.credentials]
 
-    kst = timezone(timedelta(hours=9))
-    date_str = datetime.now(kst).strftime("%Y-%m-%d")
+    date_str = datetime.now(common.KST).strftime("%Y-%m-%d")
+    plan = build_execution_plan(creds)
     results = {}
 
-    print("[1/4] 키메디 출석...")
-    results["keymedi"] = run_script("keymedi.py", extra)
-    print(json.dumps(results["keymedi"], ensure_ascii=False))
+    total_steps = len(plan)
+    for idx, (step_name, task_cfg) in enumerate(plan.items(), 1):
+        script = task_cfg["script"]
+        script_args = task_cfg.get("args", []) + extra
+        timeout = task_cfg.get("timeout", 120)
+        print(f"[{idx}/{total_steps}] {step_name}...")
+        results[step_name] = run_script(script, script_args, timeout=timeout)
+        indent = 2 if "doctorville" in step_name else None
+        print(json.dumps(results[step_name], ensure_ascii=False, indent=indent))
 
-    # 닥터빌은 출석+퀴즈+세미나 3단계를 순차 실행하며, 신청 가능한 세미나 수에 따라
-    # 소요 시간이 크게 늘어난다. 2026-07-15~16 실제로 두 계정 모두 기존 120초
-    # 제한에 걸려 "타임아웃 (120초)" failed로 잘려나간 사례가 있어 240초로 늘린다.
-    print("[2/4] 닥터빌 (bjh7790)...")
-    results["doctorville_bjh7790"] = run_script(
-        "doctorville.py", ["--account", "bjh7790"] + extra, timeout=240
-    )
-    print(json.dumps(results["doctorville_bjh7790"], ensure_ascii=False, indent=2))
-
-    print("[3/4] 닥터빌 (wonju)...")
-    results["doctorville_wonju"] = run_script(
-        "doctorville.py", ["--account", "wonju"] + extra, timeout=240
-    )
-    print(json.dumps(results["doctorville_wonju"], ensure_ascii=False, indent=2))
-
-    print("[4/4] HMP 캡슐 출석...")
-    results["hmp"] = run_script("hmp.py", extra)
-    print(json.dumps(results["hmp"], ensure_ascii=False))
-
-    # 최종 결과 JSON 출력
     print("\n=== 최종 결과 ===")
     print(json.dumps(results, ensure_ascii=False, indent=2))
 
-    # 텔레그램 전송
     if not args.no_telegram:
-        msg = format_telegram_message(results, date_str)
-        print("\n[telegram] 전송 중...")
-        ok = send_telegram(msg)
-        print(f"[telegram] {'성공' if ok else '실패'}")
+        if notify.should_send(results, notify_level):
+            msg = notify.build_message(results, notify_level, date_str)
+            print(f"\n[telegram] 전송 중... (mode: {notify_level})")
+            ok = notify.send_telegram(msg, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+            print(f"[telegram] {'성공' if ok else '실패'}")
+        else:
+            print(f"\n[telegram] 메시지 억제됨 ({notify_level} 모드)")
     else:
         print("\n[telegram] 건너뜀 (--no-telegram)")
 
-    # 실패 항목이 있으면 exit 1
     failed = False
     for key, r in results.items():
         if isinstance(r, dict):
             if r.get("status") == "failed":
                 failed = True
                 break
-            # doctorville 중첩 구조
             for sub in ["attend", "quiz", "seminar"]:
                 if r.get(sub, {}).get("status") == "failed":
                     failed = True
                     break
-            # HMP 댓글/글쓰기 중첩 구조
             if r.get("comment", {}).get("status") == "failed":
                 failed = True
                 break
