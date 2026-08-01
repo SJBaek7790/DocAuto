@@ -141,6 +141,7 @@ def _run_roulette(page, account: str) -> list[dict]:
             try:
                 start_btn.wait_for(state="visible", timeout=5000)
             except PlaywrightTimeoutError:
+                slot["status"] = "no_target"
                 slot["message"] = "START 버튼이 표시되지 않음"
                 results.append(slot)
                 continue
@@ -179,10 +180,15 @@ def _run_roulette(page, account: str) -> list[dict]:
                     page.wait_for_timeout(500)
                     break
 
-            slot["status"] = "success"
-            slot["verified_by"] = f"alt: {won_msg}"
-            slot["points"] = won_capsules
-            slot["message"] = won_msg
+            if won_msg == "룰렛 참여 완료 (결과 팝업 감지 실패)":
+                slot["status"] = "unverified"
+                slot["points"] = won_capsules
+                slot["message"] = won_msg
+            else:
+                slot["status"] = "success"
+                slot["verified_by"] = f"alt: {won_msg}"
+                slot["points"] = won_capsules
+                slot["message"] = won_msg
 
         except Exception as e:
             slot["message"] = f"룰렛 처리 예외: {e}"

@@ -66,3 +66,92 @@ def test_verified_by_contracts_all_10_modules():
     res_survey = {"status": "success", "verified_by": "completion_screen_verified"}
     assert severity_of(res_survey) == "ok"
     assert res_survey["verified_by"] == "completion_screen_verified"
+
+
+from unittest.mock import MagicMock, patch
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from doctorville import task_seminar, task_attend
+from hmp import _run_roulette
+
+
+def test_doctorville_seminar_apply_no_target():
+    mock_page = MagicMock()
+    mock_page.evaluate.return_value = []
+    res = task_seminar(mock_page, {})
+    assert res["status"] == "no_target"
+    assert res["count"] == 0
+    assert res["message"] == "신청 가능한 세미나 없음"
+
+
+def test_doctorville_attend_unverified_when_button_missing():
+    mock_page = MagicMock()
+    mock_page.url = "https://www.doctorville.co.kr/event/attend"
+    mock_locator = MagicMock()
+    mock_locator.first.wait_for.side_effect = PlaywrightTimeoutError("Timeout")
+    mock_page.locator.return_value = mock_locator
+
+    with patch("doctorville.ensure_logged_in", return_value=True):
+        res = task_attend(mock_page, {})
+    assert res["status"] == "unverified"
+    assert res["message"] == "출석 버튼 없음 (날짜 미확인)"
+
+
+def test_hmp_roulette_unverified_on_popup_detection_failure():
+    mock_page = MagicMock()
+    mock_btn = MagicMock()
+    mock_btn.is_visible.return_value = True
+    mock_btn.inner_text.side_effect = ["룰렛 참여하기", "참여 완료", "참여 완료"]
+
+    start_btn = MagicMock()
+    start_btn.wait_for.return_value = None
+
+    def locator_side_effect(selector):
+        if selector == "button":
+            m = MagicMock()
+            m.all.return_value = [mock_btn]
+            return m
+        if selector == "#startAbled":
+            return start_btn
+        m = MagicMock()
+        m.count.return_value = 0
+        m.all.return_value = []
+        return m
+
+    mock_page.locator.side_effect = locator_side_effect
+
+    results = _run_roulette(mock_page, "bjh7790")
+    assert len(results) == 1
+    assert results[0]["status"] == "unverified"
+    assert "verified_by" not in results[0]
+    assert results[0]["message"] == "룰렛 참여 완료 (결과 팝업 감지 실패)"
+
+
+def test_hmp_roulette_no_target_when_start_button_absent():
+    mock_page = MagicMock()
+    mock_btn = MagicMock()
+    mock_btn.is_visible.return_value = True
+    mock_btn.inner_text.side_effect = ["룰렛 참여하기", "참여 완료", "참여 완료"]
+
+    start_btn = MagicMock()
+    start_btn.wait_for.side_effect = PlaywrightTimeoutError("Timeout")
+
+    def locator_side_effect(selector):
+        if selector == "button":
+            m = MagicMock()
+            m.all.return_value = [mock_btn]
+            return m
+        if selector == "#startAbled":
+            return start_btn
+        m = MagicMock()
+        m.count.return_value = 0
+        m.all.return_value = []
+        return m
+
+    mock_page.locator.side_effect = locator_side_effect
+
+    results = _run_roulette(mock_page, "bjh7790")
+    assert len(results) == 1
+    assert results[0]["status"] == "no_target"
+    assert results[0]["message"] == "START 버튼이 표시되지 않음"
+
+

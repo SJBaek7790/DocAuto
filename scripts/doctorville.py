@@ -327,9 +327,8 @@ def task_attend(page, creds: dict) -> dict:
     try:
         attend_btn.first.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
     except PlaywrightTimeoutError:
-        # 버튼 자체가 없으면 이미 완료일 가능성
-        result["status"] = "already_done"
-        result["message"] = "출석 버튼 없음 — 이미 완료 상태로 추정."
+        result["status"] = "unverified"
+        result["message"] = "출석 버튼 없음 (날짜 미확인)"
         return result
 
     btn_text = attend_btn.first.inner_text().strip()
@@ -728,8 +727,8 @@ def task_seminar(page, creds: dict) -> dict:
     """)
 
     if not seminar_ids:
-        result["status"] = "success"
-        result["message"] = "신청 가능한 세미나 없음."
+        result["status"] = "no_target"
+        result["message"] = "신청 가능한 세미나 없음"
         result["count"] = 0
         return result
 
