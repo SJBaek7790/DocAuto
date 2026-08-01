@@ -121,8 +121,6 @@ DocAuto의 상세 지식 저장소. 셀렉터·파일 포맷·설계 근거·버
 
 ## 외부 cron (cron-job.org → workflow_dispatch)
 
-## 외부 cron (cron-job.org → workflow_dispatch)
-
 GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-job.org)을 주 트리거로 사용한다. PAT 만료 시 401로 실패하므로 cron-job.org 실패 알림 및 PAT 만료일을 관리할 것.
 
 **PAT (fine-grained):** repository access = `SJBaek7790/DocAuto`만, permissions = **Actions: Read and write** + Metadata(자동).
@@ -146,7 +144,7 @@ GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-
 
 ## 중앙 알림 게이트 및 Severity (`scripts/notify.py`)
 
-알림 게이트는 `NOTIFY_LEVEL` 환경변수(`actionable` [default] 또는 `all`)에 따라 텔레그램 메시지 발송 여부를 정한다.
+알림 게이트는 `NOTIFY_LEVEL` 환경변수(미설정/빈값 시 `"all"` [default] 또는 `"actionable"`)에 따라 텔레그램 메시지 발송 여부를 정한다.
 
 - **Severity 계층:** `alert` (3) > `action` (2) > `ok` (1) > `quiet` (0).
 - `actionable` 모드: 전체 severity가 `action` (2) 이상일 때만 전송 (개입 필요 항목 및 오류만 추출).

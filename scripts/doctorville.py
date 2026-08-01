@@ -889,7 +889,7 @@ def main():
     parser = argparse.ArgumentParser(description="닥터빌 일일 자동화")
     parser.add_argument(
         "--account", default="bjh7790",
-        help="credentials.json 내 계정 키 (기본: bjh7790)"
+        help="credentials.json 내 계정 키 (기본: bjh7790, 전체: all)"
     )
     parser.add_argument(
         "--task", default="all",
@@ -908,11 +908,32 @@ def main():
     args = parser.parse_args()
 
     tasks = ["attend", "quiz", "seminar"] if args.task == "all" else [args.task]
-    result = run(args.account, Path(args.credentials), headless=not args.headed, tasks=tasks)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    # 전체 태스크 중 failed가 하나라도 있으면 exit 1
-    statuses = [result[t]["status"] for t in tasks if t in result]
-    sys.exit(0 if "failed" not in statuses else 1)
+    credentials_path = Path(args.credentials)
+
+    if args.account == "all":
+        creds = common.read_credentials(credentials_path) if credentials_path.exists() else {}
+        accounts = common.list_accounts(creds, "doctorville")
+        if not accounts:
+            accounts = ["bjh7790", "wonju"]
+    else:
+        accounts = [args.account]
+
+    all_results = {}
+    failed = False
+    for acc in accounts:
+        result = run(acc, credentials_path, headless=not args.headed, tasks=tasks)
+        all_results[acc] = result
+        statuses = [result[t]["status"] for t in tasks if t in result]
+        if "failed" in statuses:
+            failed = True
+
+    if len(accounts) == 1 and args.account != "all":
+        print(json.dumps(all_results[accounts[0]], ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(all_results, ensure_ascii=False, indent=2))
+
+    sys.exit(1 if failed else 0)
+
 
 
 if __name__ == "__main__":

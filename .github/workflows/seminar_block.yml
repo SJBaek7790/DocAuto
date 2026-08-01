@@ -113,13 +113,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
-        run: |
-          if [ "${{ inputs.account || 'all' }}" = "all" ]; then
-            xvfb-run -a python3 scripts/doctorville.py --task seminar --account bjh7790 --headed || true
-            xvfb-run -a python3 scripts/doctorville.py --task seminar --account wonju --headed || true
-          else
-            xvfb-run -a python3 scripts/doctorville.py --task seminar --account ${{ inputs.account }} --headed || true
-          fi
+        run: xvfb-run -a python3 scripts/doctorville.py --account all --task seminar --headed
 
       # Step 3: 라이브 세미나 입장 실행
       - name: 라이브 세미나 입장 실행
@@ -128,8 +122,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
         run: |
-          xvfb-run -a python3 scripts/seminar_live.py \
-            --account ${{ inputs.account || 'all' }} \
+          xvfb-run -a python3 scripts/seminar_live.py --account all \
             --stay-seconds ${{ inputs.stay_seconds || '20' }} \
             --block auto \
             --state-file scripts/state/seminar_entered.json \
@@ -144,8 +137,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
         run: |
-          xvfb-run -a python3 scripts/seminar_survey.py \
-            --account ${{ inputs.account || 'all' }} \
+          xvfb-run -a python3 scripts/seminar_survey.py --account all \
             --state-file scripts/state/seminar_entered.json \
             --headed
 

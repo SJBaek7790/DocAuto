@@ -33,7 +33,7 @@
 | `daily.yml` | cron-job.org 15:00 KST (주) + GitHub cron `0 7 * * *` (16:00 KST 백스톱) | ① inbox fetch → ② 닥터빌(출석·퀴즈) → ③ 키메디 → ④ HMP(캡슐·룰렛·댓글·글쓰기) → ⑤ 익일 퀴즈 사전 확인 (`daily_runner.py`) → 정답 커밋 |
 | `seminar_block.yml` | cron-job.org → `workflow_dispatch` (11:00~14:30, 17:00~21:30 KST 30분 간격) | ① inbox fetch (11:00 KST 런만) → ② 닥터빌 세미나 신청 (`doctorville.py --task seminar`) → ③ 라이브 세미나 입장 (`seminar_live.py`) → ④ 세미나 설문 (`seminar_survey.py`) |
 
-- 중앙 알림 게이트(`scripts/notify.py`)가 `NOTIFY_LEVEL` 환경변수 (`actionable` default / `all`)에 따라 알림 여부를 결정한다.
+- 중앙 알림 게이트(`scripts/notify.py`)가 `NOTIFY_LEVEL` 환경변수 (미설정/빈값 시 `"all"` 기본값 / `"actionable"`)에 따라 알림 여부를 결정한다.
 - 각 스크립트는 결과 JSON 1건을 stdout에 출력, `daily_runner.py` 및 알림 게이트가 파싱·취합·전송.
 - 서브프로세스는 `sys.executable`로 호출. **venv 절대경로 하드코딩 금지.**
 - 실패 1건이라도 있으면 exit 1.
