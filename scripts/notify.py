@@ -9,6 +9,9 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+DEFAULT_CREDENTIALS = Path(__file__).resolve().parent.parent / "credentials.json"
 
 SEVERITY = {
     "success": "ok",
@@ -31,8 +34,6 @@ SEVERITY_ORDER = {"quiet": 0, "ok": 1, "action": 2, "alert": 3}
 def _node_sev(node: dict) -> str:
     if "status" in node:
         st = node["status"]
-        if st == "failed" and node.get("message") == "START 버튼이 표시되지 않음":
-            return "quiet"
         if st == "success" and not node.get("verified_by"):
             return "alert"
         return SEVERITY.get(st, "alert")
@@ -183,17 +184,32 @@ def build_message(results: dict, level: str, date_str: str) -> str:
 TELEGRAM_MAX_LEN = 4096
 
 
-def send_telegram(text: str, bot_token: str = "", chat_id: str = "") -> bool:
+def send_telegram(
+    text: str, bot_token: str = "", chat_id: str = "", credentials_path=None
+) -> bool:
     """Send Telegram message via Telegram Bot API."""
-    if not text:
-        return True
-
     token = bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
     cid = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
 
     if not token or not cid:
+        cpath = Path(credentials_path) if credentials_path else DEFAULT_CREDENTIALS
+        if cpath.exists():
+            try:
+                with open(cpath, "r", encoding="utf-8") as f:
+                    creds = json.load(f)
+                t_block = creds.get("telegram", {})
+                if isinstance(t_block, dict):
+                    token = token or t_block.get("bot_token", "")
+                    cid = cid or t_block.get("chat_id", "")
+            except Exception as e:
+                print(f"[telegram] credentials 로드 실패: {e}", file=sys.stderr)
+
+    if not token or not cid:
         print("[telegram] 토큰/chat_id 없음", file=sys.stderr)
         return False
+
+    if not text:
+        return True
 
     if len(text) > TELEGRAM_MAX_LEN:
         text = text[: TELEGRAM_MAX_LEN - 20] + "\n…(생략)"

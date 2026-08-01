@@ -10,27 +10,22 @@ def test_severity_mapping():
     assert severity_of({"status": "failed"}) == "alert"
 
 
+def test_severity_of_no_target():
+    assert severity_of({"status": "no_target"}) == "quiet"
+
+
 def test_nested_hmp_and_list_severity():
     # HMP dictionary containing top-level status: already_done, comment: {status: failed},
-    # and roulette: [{status: failed, message: "START 버튼이 표시되지 않음"}, {status: failed, message: "네트워크 오류"}]
+    # and roulette: [{status: already_done}, {status: failed, message: "네트워크 오류"}]
     hmp_res = {
         "status": "already_done",
         "comment": {"status": "failed", "message": "저장 실패"},
         "roulette": [
-            {"status": "failed", "message": "START 버튼이 표시되지 않음"},
+            {"status": "already_done"},
             {"status": "failed", "message": "네트워크 오류"},
         ],
     }
     assert severity_of(hmp_res) == "alert"
-
-
-def test_roulette_expected_failure_quiet():
-    # Roulette expected failure "START 버튼이 표시되지 않음" alone evaluates to "quiet"
-    res = {
-        "status": "already_done",
-        "roulette": [{"status": "failed", "message": "START 버튼이 표시되지 않음"}],
-    }
-    assert severity_of(res) == "quiet"
 
 
 def test_should_send_actionable_mode():
@@ -39,7 +34,7 @@ def test_should_send_actionable_mode():
         "doctorville": {"status": "success", "verified_by": "modal"},
         "hmp": {
             "status": "already_done",
-            "roulette": [{"status": "failed", "message": "START 버튼이 표시되지 않음"}],
+            "roulette": [{"status": "already_done"}],
         },
     }
     assert should_send(quiet_or_ok, "actionable") is False
@@ -124,4 +119,15 @@ def test_build_message_actionable_preserves_questions_payload():
 def test_send_telegram_empty_text_returns_true():
     assert send_telegram("") is True
     assert send_telegram(None) is True
+
+
+def test_send_telegram_credentials_fallback(tmp_path, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    creds_file = tmp_path / "credentials.json"
+    creds_file.write_text('{"telegram": {"bot_token": "dummy_token", "chat_id": "dummy_chat"}}', encoding="utf-8")
+
+    # Text empty returns True without HTTP request, but verifies credentials loading path
+    assert send_telegram("", credentials_path=str(creds_file)) is True
+
 

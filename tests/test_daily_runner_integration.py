@@ -67,7 +67,7 @@ def test_should_send_actionable_zero_calls():
         "keymedi": {"status": "already_done"},
         "hmp": {
             "status": "already_done",
-            "roulette": [{"status": "failed", "message": "START 버튼이 표시되지 않음"}],
+            "roulette": [{"status": "already_done"}],
         },
         "doctorville_bjh7790": {"attend": {"status": "already_done"}, "quiz": {"status": "already_done"}},
         "precheck_quiz": {"status": "already_done"},
