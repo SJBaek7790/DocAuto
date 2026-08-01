@@ -652,7 +652,8 @@ def main():
 def get_notify_level(always_notify: bool = False) -> str:
     if always_notify:
         return "all"
-    return os.environ.get("NOTIFY_LEVEL", "all")
+    return os.environ.get("NOTIFY_LEVEL") or "all"
+
 
 
 if __name__ == "__main__":

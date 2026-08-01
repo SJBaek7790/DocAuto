@@ -40,4 +40,7 @@ def test_get_notify_level_default(monkeypatch):
     from seminar_live import get_notify_level
     monkeypatch.delenv("NOTIFY_LEVEL", raising=False)
     assert get_notify_level() == "all"
+    monkeypatch.setenv("NOTIFY_LEVEL", "")
+    assert get_notify_level() == "all"
+
 
