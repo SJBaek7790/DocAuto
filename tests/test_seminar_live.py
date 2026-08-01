@@ -35,3 +35,9 @@ def test_format_telegram_message():
     }
     msg = format_telegram_message(res, "2026-07-26", 20, block_name="lunch")
     assert "[점심]" in msg
+
+def test_get_notify_level_default(monkeypatch):
+    from seminar_live import get_notify_level
+    monkeypatch.delenv("NOTIFY_LEVEL", raising=False)
+    assert get_notify_level() == "all"
+

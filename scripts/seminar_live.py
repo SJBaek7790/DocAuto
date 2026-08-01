@@ -633,7 +633,7 @@ def main():
     )
 
     if not args.no_telegram:
-        notify_level = "all" if args.always_notify else os.environ.get("NOTIFY_LEVEL", "actionable")
+        notify_level = get_notify_level(args.always_notify)
         if notify.should_send(results, notify_level):
             daily_runner.load_telegram_credentials(str(credentials_path))
             date_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
@@ -647,6 +647,12 @@ def main():
         print("\n[telegram] 건너뜀 (--no-telegram)")
 
     sys.exit(1 if failed else 0)
+
+
+def get_notify_level(always_notify: bool = False) -> str:
+    if always_notify:
+        return "all"
+    return os.environ.get("NOTIFY_LEVEL", "all")
 
 
 if __name__ == "__main__":
