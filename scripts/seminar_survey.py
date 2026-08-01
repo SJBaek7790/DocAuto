@@ -176,6 +176,48 @@ def resolve_page(questions: list[dict], bank: dict) -> tuple[list[dict], list[di
     return plan, missing
 
 
+def get_survey_cutoff(item: dict) -> datetime | None:
+    if not isinstance(item, dict):
+        return None
+    start_str = item.get("start")
+    if start_str and isinstance(start_str, str):
+        s_dt, e_dt = parse_dd_date(start_str)
+        if e_dt:
+            return e_dt + timedelta(minutes=90)
+        if s_dt:
+            return s_dt + timedelta(hours=3)
+        m = re.search(r"(\d{4}-\d{2}-\d{2})\s*\([^)]+\)\s*(\d{2}:\d{2})", start_str)
+        if m:
+            d_str, s_str = m.groups()
+            try:
+                s_dt = datetime.strptime(f"{d_str} {s_str}", "%Y-%m-%d %H:%M").replace(tzinfo=common.KST)
+                return s_dt + timedelta(hours=3)
+            except ValueError:
+                pass
+
+    ent_str = item.get("entered_at")
+    if ent_str and isinstance(ent_str, str):
+        try:
+            ent_dt = datetime.fromisoformat(ent_str)
+            if ent_dt.tzinfo is None:
+                ent_dt = ent_dt.replace(tzinfo=common.KST)
+            return ent_dt + timedelta(hours=3)
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def evaluate_survey_cutoff(item: dict, now_dt: datetime = None) -> str:
+    if now_dt is None:
+        now_dt = datetime.now(common.KST)
+    elif now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=common.KST)
+    cutoff = get_survey_cutoff(item)
+    if cutoff is not None and now_dt >= cutoff:
+        return "closed"
+    return "not_ready"
+
+
 def add_missing_to_bank(bank_path: str | Path, missing: list[dict]) -> int:
     """미등록 문항을 빈 값으로 문제은행에 추가한다. 추가된 개수 반환."""
     bank_path = Path(bank_path)
@@ -209,16 +251,32 @@ def pending_seminar_ids(state: dict, account: str) -> list[int]:
     return pending
 
 
-def mark_survey_done(state: dict, account: str, seminar_id: int | str, path=None) -> None:
+def get_entered_item(state: dict, account: str, seminar_id: int | str) -> dict:
+    if isinstance(state, dict):
+        acc = state.get("accounts", {}).get(account, {})
+        for item in acc.get("entered", []):
+            if isinstance(item, dict) and str(item.get("id")) == str(seminar_id):
+                return item
+            elif isinstance(item, int) and str(item) == str(seminar_id):
+                return {"id": item}
+    return {"id": int(seminar_id) if str(seminar_id).isdigit() else seminar_id}
+
+
+def mark_survey_status(state: dict, account: str, seminar_id: int | str, status_str: str = "done", path=None) -> None:
     if not isinstance(state, dict):
         return
     state = upgrade_to_v2(state)
     acc = state.setdefault("accounts", {}).setdefault(account, {})
     survey = acc.setdefault("survey", {})
     sid_str = str(seminar_id)
-    survey[sid_str] = "done"
+    survey[sid_str] = status_str
     if path is not None:
         seminar_live.save_state(state, path)
+
+
+def mark_survey_done(state: dict, account: str, seminar_id: int | str, path=None) -> None:
+    mark_survey_status(state, account, seminar_id, "done", path)
+
 
 
 # ---------------------------------------------------------------------------
@@ -337,13 +395,27 @@ def open_survey(page, seminar_id) -> tuple[object, str]:
     return survey_page, ""
 
 
-def run_survey(page, seminar_id, bank_path: Path) -> dict:
+def run_survey(page, item_or_id, bank_path: Path, now_dt: datetime = None) -> dict:
     """세미나 1건의 설문을 처리한다."""
-    result = {"seminarId": int(seminar_id), "status": "failed", "message": ""}
+    if isinstance(item_or_id, dict):
+        item = item_or_id
+        seminar_id = item.get("id")
+    else:
+        seminar_id = item_or_id
+        item = {"id": int(seminar_id) if str(seminar_id).isdigit() else seminar_id}
+
+    title = item.get("title") or ""
+    sid_val = int(seminar_id) if str(seminar_id).isdigit() else seminar_id
+    result = {"seminarId": sid_val, "status": "failed", "message": ""}
+    if title:
+        result["title"] = title
+
     survey_page, err = open_survey(page, seminar_id)
     if survey_page is None:
-        result["status"] = "no_questions"
-        result["message"] = err
+        st = evaluate_survey_cutoff(item, now_dt)
+        result["status"] = st
+        prefix = f"[{title}] " if title else ""
+        result["message"] = f"{prefix}{st}: {err}"
         return result
 
     try:
@@ -356,8 +428,10 @@ def run_survey(page, seminar_id, bank_path: Path) -> dict:
                     result["pages"] = pages_done
                     result["message"] = f"설문 제출 완료({pages_done}페이지)."
                 else:
-                    result["status"] = "no_questions"
-                    result["message"] = "설문 창에 문항이 없음."
+                    st = evaluate_survey_cutoff(item, now_dt)
+                    result["status"] = st
+                    prefix = f"[{title}] " if title else ""
+                    result["message"] = f"{prefix}{st}: 설문 창에 문항이 없음."
                 return result
 
             bank = load_bank(bank_path)
@@ -366,8 +440,9 @@ def run_survey(page, seminar_id, bank_path: Path) -> dict:
                 added = add_missing_to_bank(bank_path, missing)
                 result["status"] = "incomplete_bank"
                 result["missing"] = missing
+                prefix = f"[{title}] " if title else ""
                 result["message"] = (
-                    f"{pages_done + 1}페이지에 미등록 문항 {len(missing)}건 — 제출하지 않음"
+                    f"{prefix}{pages_done + 1}페이지에 미등록 문항 {len(missing)}건 — 제출하지 않음"
                     f"(survey_answers.json에 {added}건 빈 값 추가)."
                 )
                 return result
@@ -440,17 +515,21 @@ def run_account(
             for sid in seminar_ids:
                 # 한 세미나의 실패가 나머지를 막지 않도록 개별적으로 감싼다.
                 try:
-                    r = run_survey(page, sid, bank_path)
+                    item = get_entered_item(state, account, sid)
+                    r = run_survey(page, item, bank_path)
                 except Exception as e:
-                    r = {"seminarId": int(sid), "status": "failed", "message": f"예외 발생: {e}"}
+                    r = {"seminarId": int(sid) if str(sid).isdigit() else sid, "status": "failed", "message": f"예외 발생: {e}"}
                 output["surveys"].append(r)
                 if r["status"] == "success" and state is not None:
-                    mark_survey_done(state, account, sid, state_file)
+                    mark_survey_status(state, account, sid, "done", state_file)
+                elif r["status"] == "closed" and state is not None:
+                    mark_survey_status(state, account, sid, "closed", state_file)
 
             statuses = [r["status"] for r in output["surveys"]]
             output["status"] = "failed" if "failed" in statuses else "success"
             output["message"] = (
                 f"성공 {statuses.count('success')}건, 미등록 {statuses.count('incomplete_bank')}건, "
+                f"마감 {statuses.count('closed')}건, 미오픈 {statuses.count('not_ready')}건, "
                 f"설문없음 {statuses.count('no_questions')}건, 실패 {statuses.count('failed')}건."
             )
         except Exception as e:
@@ -470,6 +549,8 @@ def run_account(
 STATUS_LABEL = {
     "success": "✅",
     "incomplete_bank": "❓",
+    "not_ready": "⏳",
+    "closed": "🔒",
     "no_questions": "⏭️",
     "already_done": "☑️",
     "skipped": "⏭️",
