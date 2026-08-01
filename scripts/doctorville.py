@@ -61,6 +61,50 @@ LEGACY_ANSWERS_PATH = SCRIPT_DIR.parent / "quiz_answers_legacy.json"
 # 유틸
 # ---------------------------------------------------------------------------
 
+def normalize_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "").lower()
+
+
+def match_quiz_bank(product_name: str, bank: dict, legacy: dict) -> bool:
+    norm_p = normalize_text(product_name)
+    if not norm_p:
+        return False
+    for k in list(bank.keys()) + list(legacy.keys()):
+        norm_k = normalize_text(k)
+        if norm_k and norm_k in norm_p:
+            return True
+    return False
+
+
+def parse_calendar_cell(cell_html: str) -> dict:
+    p_id = None
+    quiz_id = None
+    for input_tag in re.findall(r'<input[^>]*>', cell_html, re.IGNORECASE):
+        class_m = re.search(r'class=["\']([^"\']+)["\']', input_tag, re.IGNORECASE)
+        val_m = re.search(r'value=["\']([^"\']+)["\']', input_tag, re.IGNORECASE)
+        if class_m and val_m:
+            classes = class_m.group(1).split()
+            if "pIdCls" in classes:
+                p_id = val_m.group(1)
+            if "quizIdCls" in classes:
+                quiz_id = val_m.group(1)
+
+    name_match = re.search(r'<span[^>]*class=["\'][^"\']*name[^"\']*["\'][^>]*>(.*?)</span>', cell_html, re.DOTALL | re.IGNORECASE)
+    if name_match:
+        product = re.sub(r'<[^>]+>', '', name_match.group(1)).strip()
+    else:
+        spans = re.findall(r'<span[^>]*>(.*?)</span>', cell_html, re.DOTALL | re.IGNORECASE)
+        clean_spans = [re.sub(r'<[^>]+>', '', s).strip() for s in spans]
+        non_day = [s for s in clean_spans if not s.isdigit() and s]
+        product = non_day[0] if non_day else ""
+
+    return {
+        "product": product,
+        "p_id": p_id,
+        "quiz_id": quiz_id,
+    }
+
+
 def load_credentials(path: Path, account: str) -> dict:
     data = common.read_credentials(path)
     if account not in data:
@@ -324,16 +368,16 @@ def task_attend(page, creds: dict) -> dict:
 # 태스크 ② 오늘의 퀴즈
 # ---------------------------------------------------------------------------
 
-def _get_today_quiz_product(page) -> tuple[str | None, str | None]:
+def _get_today_quiz_product(page) -> tuple[str | None, str | None, str | None]:
     """
-    /product/main의 이달의 퀴즈 캘린더에서 오늘 날짜의 제품명과 pId를 추출한다.
+    /product/main의 이달의 퀴즈 캘린더에서 오늘 날짜의 제품명과 pId, quizId를 추출한다.
 
     pId는 캘린더 표에서 오늘 셀(`td.today`)에 내장된 hidden input(`.pIdCls`)
     값을 직접 읽는다. 의약품(medicineList)뿐 아니라 의료기기(instrumentList)
     등 카테고리와 무관하게 항상 존재하므로, 카테고리별 목록 페이지에서 이름으로
     검색하는 것보다 안정적이다(2026-07-20, 모비케어=의료기기가 medicineList에
     없어 pId 조회 실패했던 문제 확인 후 수정).
-    반환: (제품명, pId) — 각각 못 찾으면 None
+    반환: (제품명, pId, quizId) — 각각 못 찾으면 None
     """
     page.goto(PRODUCT_MAIN_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(2000)  # SPA 로딩 대기
@@ -345,7 +389,7 @@ def _get_today_quiz_product(page) -> tuple[str | None, str | None]:
         calendar.first.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
         text = calendar.first.inner_text()
     except PlaywrightTimeoutError:
-        return None, None
+        return None, None, None
 
     # 날짜 다음 줄이 제품명
     product = None
@@ -362,7 +406,12 @@ def _get_today_quiz_product(page) -> tuple[str | None, str | None]:
     if pid_input.count() > 0:
         pid = pid_input.first.get_attribute("value")
 
-    return product, pid
+    quiz_id = None
+    quiz_input = page.locator("td.today input.quizIdCls")
+    if quiz_input.count() > 0:
+        quiz_id = quiz_input.first.get_attribute("value")
+
+    return product, pid, quiz_id
 
 
 def _get_product_pid(page, product_name: str) -> str | None:
@@ -393,7 +442,7 @@ def task_quiz(page, creds: dict) -> dict:
     answers = load_quiz_answers()
 
     # 오늘 퀴즈 제품명·pId 확인 (pId는 캘린더 셀에 내장 — 의약품/의료기기 공통)
-    product, pid = _get_today_quiz_product(page)
+    product, pid, quiz_id = _get_today_quiz_product(page)
     if not product:
         result["status"] = "failed"
         result["message"] = "이달의 퀴즈 캘린더에서 오늘 제품명을 찾지 못함."
@@ -401,6 +450,8 @@ def task_quiz(page, creds: dict) -> dict:
         return result
 
     result["product"] = product
+    if quiz_id:
+        result["quiz_id"] = quiz_id
 
     # pId 조회 — 캘린더에서 못 찾았으면 medicineList 검색으로 폴백(의약품 한정)
     if not pid:
@@ -727,6 +778,43 @@ def task_seminar(page, creds: dict) -> dict:
 
 # ---------------------------------------------------------------------------
 # 메인
+def run_precheck_quiz(page, credentials_path: str = None) -> dict:
+    page.goto(PRODUCT_MAIN_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(2000)
+
+    today_td = page.locator("td.today")
+    if not today_td.count():
+        return {"status": "not_ready", "message": "오늘 캘린더 셀 미발견"}
+
+    next_td = today_td.locator("xpath=following-sibling::td[1]")
+    if not next_td.count():
+        next_td = today_td.locator("xpath=ancestor::tr/following-sibling::tr[1]/td[1]")
+    if not next_td.count():
+        return {"status": "not_ready", "message": "내일 캘린더 셀 미발견"}
+
+    info = parse_calendar_cell(next_td.inner_html())
+    if not info["product"]:
+        return {"status": "not_ready", "message": "내일 셀 제품명 비어있음"}
+
+    bank = load_quiz_answers()
+    legacy = load_quiz_answers_legacy()
+
+    is_matched = match_quiz_bank(info["product"], bank, legacy)
+    if is_matched:
+        return {
+            "status": "already_done",
+            "product": info["product"],
+            "quiz_id": info["quiz_id"],
+            "verified_by": "quiz_bank_match"
+        }
+    return {
+        "status": "no_answer",
+        "product": info["product"],
+        "quiz_id": info["quiz_id"],
+        "message": f"내일 퀴즈: {info['product']} — 정답 없음"
+    }
+
+
 # ---------------------------------------------------------------------------
 
 def run(account: str, credentials_path: Path, headless: bool, tasks: list[str]) -> dict:
@@ -738,6 +826,8 @@ def run(account: str, credentials_path: Path, headless: bool, tasks: list[str]) 
         "quiz":    {"status": "skipped"},
         "seminar": {"status": "skipped"},
     }
+    if "precheck_quiz" in tasks:
+        output["precheck_quiz"] = {"status": "skipped"}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
@@ -763,6 +853,9 @@ def run(account: str, credentials_path: Path, headless: bool, tasks: list[str]) 
             if "seminar" in tasks:
                 output["seminar"] = task_seminar(page, creds)
 
+            if "precheck_quiz" in tasks:
+                output["precheck_quiz"] = run_precheck_quiz(page, str(credentials_path))
+
         except Exception as e:
             output["error"] = f"예외 발생: {e}"
             # 예외로 중단된 태스크는 초기값 "skipped"로 남아 텔레그램에 ⏭️로 보고된다.
@@ -785,7 +878,7 @@ def main():
     )
     parser.add_argument(
         "--task", default="all",
-        choices=["all", "attend", "quiz", "seminar"],
+        choices=["all", "attend", "quiz", "seminar", "precheck_quiz"],
         help="실행할 태스크 (기본: all)"
     )
     parser.add_argument(
@@ -803,7 +896,7 @@ def main():
     result = run(args.account, Path(args.credentials), headless=not args.headed, tasks=tasks)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     # 전체 태스크 중 failed가 하나라도 있으면 exit 1
-    statuses = [result[t]["status"] for t in ["attend", "quiz", "seminar"]]
+    statuses = [result[t]["status"] for t in tasks if t in result]
     sys.exit(0 if "failed" not in statuses else 1)
 
 
