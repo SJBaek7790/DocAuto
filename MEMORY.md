@@ -181,7 +181,7 @@ GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-
 - **goto 타임아웃(2026-07-21):** 러너의 일시적 네트워크 지연. `common.goto_with_retry()`(2초 대기 후 최대 2회 재시도) 추가.
 
 ### daily_runner.py
-- **텔레그램 400 Bad Request:** 파싱 오류가 아니라 **길이 초과**였다. Playwright 예외(call log 포함 ~2400자)를 그대로 넣어 4096자 한도 초과. `_short()`(첫 줄·200자) + 4096자 안전망 + `HTTPError` 응답 body 로깅.
+- **텔레그램 400 Bad Request:** 파싱 오류가 아니라 **길이 초과**였다. Playwright 예외(call log 포함 ~2400자)를 그대로 넣어 4096자 한도 초과. `notify.shorten()`(첫 줄·200자) + 4096자 안전망 + `HTTPError` 응답 body 로깅.
 - **닥터빌 120초 타임아웃:** 출석+퀴즈+세미나 순차 + 세미나 건수만큼 반복이라 초과. 닥터빌만 240초.
 - 실행 순서: 키메디 → 닥터빌×2 → HMP (HMP를 맨 뒤로, 사용자 요청).
 

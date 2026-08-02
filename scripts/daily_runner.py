@@ -27,28 +27,8 @@ from pathlib import Path
 import common
 import notify
 
-send_telegram = notify.send_telegram
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 PYTHON = sys.executable
-
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-
-def load_telegram_credentials(credentials_path: str) -> None:
-    """credentials.json에서 텔레그램 토큰/chat_id를 전역변수에 로드한다."""
-    global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        return
-    try:
-        with open(credentials_path, "r", encoding="utf-8") as f:
-            creds = json.load(f)
-        tg = creds.get("telegram", {})
-        TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_TOKEN or tg.get("bot_token", "")
-        TELEGRAM_CHAT_ID = TELEGRAM_CHAT_ID or tg.get("chat_id", "")
-    except Exception as e:
-        print(f"[telegram] credentials.json 로드 실패: {e}", file=sys.stderr)
 
 
 def run_script(script_name: str, extra_args: list[str] = None, timeout: int = 120) -> dict:
@@ -82,14 +62,6 @@ def run_script(script_name: str, extra_args: list[str] = None, timeout: int = 12
         return {"status": "failed", "message": f"{script_name} 타임아웃 ({timeout}초)."}
     except Exception as e:
         return {"status": "failed", "message": f"실행 예외: {e}"}
-
-
-def format_status_emoji(status: str) -> str:
-    return {"success": "✅", "already_done": "☑️", "skipped": "⏭️", "no_answer": "❓", "failed": "❌"}.get(status, "❓")
-
-
-def _short(text: str, limit: int = 200) -> str:
-    return notify._short(text, limit)
 
 
 FAIL_STATUSES = {"failed", "unverified", "blocked"}
@@ -154,7 +126,7 @@ def main():
     )
     args = parser.parse_args()
 
-    notify_level = args.notify_level or os.environ.get("NOTIFY_LEVEL") or "all"
+    notify_level = notify.resolve_level(args.notify_level or os.environ.get("NOTIFY_LEVEL"))
 
     credentials_path = Path(args.credentials)
     creds = {}
@@ -163,8 +135,6 @@ def main():
             creds = common.read_credentials(credentials_path)
         except Exception as e:
             print(f"[daily_runner] credentials 로드 실패: {e}", file=sys.stderr)
-
-    load_telegram_credentials(str(credentials_path))
 
     extra = []
     if args.headed:
@@ -193,7 +163,7 @@ def main():
         if notify.should_send(results, notify_level):
             msg = notify.build_message(results, notify_level, date_str)
             print(f"\n[telegram] 전송 중... (mode: {notify_level})")
-            ok = notify.send_telegram(msg, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+            ok = notify.send_telegram(msg, credentials_path=str(credentials_path))
             print(f"[telegram] {'성공' if ok else '실패'}")
         else:
             print(f"\n[telegram] 메시지 억제됨 ({notify_level} 모드)")

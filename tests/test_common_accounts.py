@@ -1,5 +1,3 @@
-import os
-import pytest
 from common import list_accounts, account_label, is_recon_enabled, KST
 
 def test_list_accounts():

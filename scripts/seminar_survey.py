@@ -51,7 +51,6 @@ import common
 import doctorville
 import seminar_live
 from seminar_live import parse_dd_date, upgrade_to_v2
-import daily_runner
 import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -306,6 +305,17 @@ def rollup_account_status(statuses: list[str]) -> str:
     if "closed" in statuses:
         return "closed"
     return statuses[0]
+
+
+def rollup_verified_by(surveys: list[dict]) -> str:
+    """계정 레벨 양성 증거. 성공한 설문이 전부 verified_by를 가질 때만 생성한다.
+
+    없으면 notify가 계정 노드를 unverified(alert)로 강등한다.
+    """
+    evidence = [s.get("verified_by") for s in surveys if s.get("status") == "success"]
+    if not evidence or not all(evidence):
+        return ""
+    return f"surveys_verified: {len(evidence)}건"
 
 
 
@@ -633,6 +643,9 @@ def run_account(
 
             statuses = [r["status"] for r in output["surveys"]]
             output["status"] = rollup_account_status(statuses)
+            verified = rollup_verified_by(output["surveys"])
+            if output["status"] == "success" and verified:
+                output["verified_by"] = verified
             output["message"] = (
                 f"성공 {statuses.count('success')}건, 미등록 {statuses.count('incomplete_bank')}건, "
                 f"마감 {statuses.count('closed')}건, 미오픈 {statuses.count('not_ready')}건, "
@@ -697,12 +710,11 @@ def main():
     print(json.dumps(results, ensure_ascii=False, indent=2))
 
     if not args.no_telegram and any(r.get("surveys") for r in results.values()):
-        daily_runner.load_telegram_credentials(args.credentials)
-        notify_level = os.environ.get("NOTIFY_LEVEL", "all")
+        notify_level = notify.resolve_level(os.environ.get("NOTIFY_LEVEL"))
         if notify.should_send(results, notify_level):
             msg = notify.build_message(results, notify_level, date_str)
             if msg:
-                ok = notify.send_telegram(msg)
+                ok = notify.send_telegram(msg, credentials_path=args.credentials)
                 print(f"[telegram] {'성공' if ok else '실패'}")
 
     sys.exit(1 if any(r.get("status") == "failed" for r in results.values()) else 0)

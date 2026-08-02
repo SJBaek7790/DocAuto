@@ -1,5 +1,11 @@
-import pytest
-from notify import SEVERITY, SEVERITY_ORDER, severity_of, should_send, build_message, send_telegram
+from notify import (
+    build_message,
+    resolve_credentials,
+    resolve_level,
+    send_telegram,
+    severity_of,
+    should_send,
+)
 
 
 def test_severity_mapping():
@@ -121,13 +127,35 @@ def test_send_telegram_empty_text_returns_true():
     assert send_telegram(None) is True
 
 
-def test_send_telegram_credentials_fallback(tmp_path, monkeypatch):
+def test_resolve_credentials_falls_back_to_file(tmp_path, monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     creds_file = tmp_path / "credentials.json"
-    creds_file.write_text('{"telegram": {"bot_token": "dummy_token", "chat_id": "dummy_chat"}}', encoding="utf-8")
+    creds_file.write_text('{"telegram": {"bot_token": "file_token", "chat_id": "file_chat"}}', encoding="utf-8")
 
-    # Text empty returns True without HTTP request, but verifies credentials loading path
-    assert send_telegram("", credentials_path=str(creds_file)) is True
+    assert resolve_credentials(credentials_path=str(creds_file)) == ("file_token", "file_chat")
+
+
+def test_resolve_credentials_env_beats_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "env_token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "env_chat")
+    creds_file = tmp_path / "credentials.json"
+    creds_file.write_text('{"telegram": {"bot_token": "file_token", "chat_id": "file_chat"}}', encoding="utf-8")
+
+    assert resolve_credentials(credentials_path=str(creds_file)) == ("env_token", "env_chat")
+
+
+def test_resolve_credentials_missing_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    assert resolve_credentials(credentials_path=str(tmp_path / "none.json")) == ("", "")
+
+
+def test_resolve_level():
+    assert resolve_level("") == "all"
+    assert resolve_level(None) == "all"
+    assert resolve_level("  ACTIONABLE ") == "actionable"
+    assert resolve_level("nonsense") == "all"
 
 

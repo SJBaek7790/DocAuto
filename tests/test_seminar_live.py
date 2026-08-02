@@ -1,6 +1,3 @@
-import json
-import pytest
-from pathlib import Path
 from seminar_live import load_state, save_state, update_entered_state, determine_block_name
 
 def test_load_and_save_state(tmp_path):

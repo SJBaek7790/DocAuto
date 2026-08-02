@@ -1,4 +1,3 @@
-import pytest
 from notify import severity_of
 from hmp import verify_comment_saved
 

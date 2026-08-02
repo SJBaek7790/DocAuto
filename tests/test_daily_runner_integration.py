@@ -1,13 +1,5 @@
-import pytest
-import daily_runner
 from daily_runner import build_execution_plan, evaluate_exit_code
-import notify
 from notify import should_send
-
-
-def test_send_telegram_export():
-    assert hasattr(daily_runner, "send_telegram")
-    assert daily_runner.send_telegram == notify.send_telegram
 
 
 def test_build_execution_plan():

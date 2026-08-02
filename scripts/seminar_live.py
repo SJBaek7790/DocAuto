@@ -25,7 +25,6 @@ import os
 import re
 import sys
 import tempfile
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -33,7 +32,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 import common
 import doctorville
-import daily_runner
 import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -500,7 +498,7 @@ def run_account(
 
 
 # ---------------------------------------------------------------------------
-# 텔레그램 요약 (daily_runner의 emoji/축약 헬퍼 재사용)
+# 텔레그램 요약 (notify의 emoji/축약 헬퍼 재사용)
 # ---------------------------------------------------------------------------
 
 ACCOUNT_LABELS = {"bjh7790": "승진(bjh7790)", "wonju": "원주(wonju)"}
@@ -519,7 +517,7 @@ def format_telegram_message(
     for acc, r in results.items():
         label = ACCOUNT_LABELS.get(acc, acc)
         ls = r.get("live_seminar", {})
-        e = daily_runner.format_status_emoji(ls.get("status", "failed"))
+        e = notify.format_status_emoji(ls.get("status", "failed"))
         entered = ls.get("entered", [])
         already_entered = ls.get("already_entered", [])
         skipped = ls.get("skipped", [])
@@ -534,9 +532,9 @@ def format_telegram_message(
         if already_entered:
             lines.append(f"  └ 이미 입장 seminarId: {already_entered}")
         for f in failed[:3]:
-            lines.append(f"  └ 실패 {f['seminarId']}: {daily_runner._short(f.get('message', ''))}")
+            lines.append(f"  └ 실패 {f['seminarId']}: {notify.shorten(f.get('message', ''))}")
         if r.get("error"):
-            lines.append(f"  └ 스크립트 예외: {daily_runner._short(r['error'])}")
+            lines.append(f"  └ 스크립트 예외: {notify.shorten(r['error'])}")
         lines.append("")
 
     return "\n".join(lines).rstrip()
@@ -635,11 +633,10 @@ def main():
     if not args.no_telegram:
         notify_level = get_notify_level(args.always_notify)
         if notify.should_send(results, notify_level):
-            daily_runner.load_telegram_credentials(str(credentials_path))
             date_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M")
             msg = format_telegram_message(results, date_str, args.stay_seconds, block_name=block_name)
             print("\n[telegram] 전송 중...")
-            ok = daily_runner.send_telegram(msg)
+            ok = notify.send_telegram(msg, credentials_path=str(credentials_path))
             print(f"[telegram] {'성공' if ok else '실패'}")
         else:
             print("\n[telegram] 전송 조건 미충족. 건너뜀.")
@@ -652,7 +649,7 @@ def main():
 def get_notify_level(always_notify: bool = False) -> str:
     if always_notify:
         return "all"
-    return os.environ.get("NOTIFY_LEVEL") or "all"
+    return notify.resolve_level(os.environ.get("NOTIFY_LEVEL"))
 
 
 

@@ -11,7 +11,9 @@ from seminar_survey import (
     run_survey_for_item,
     mark_survey_status,
     rollup_account_status,
+    rollup_verified_by,
 )
+from notify import severity_of
 
 
 def test_evaluate_survey_cutoff_before_deadline():
@@ -175,6 +177,25 @@ def test_rollup_account_status():
     assert rollup_account_status(["not_ready", "not_ready"]) == "not_ready"
     assert rollup_account_status(["closed", "closed"]) == "closed"
     assert rollup_account_status(["already_done", "already_done"]) == "already_done"
+
+
+def test_rollup_verified_by():
+    assert rollup_verified_by([]) == ""
+    assert rollup_verified_by([{"status": "not_ready"}]) == ""
+    # 성공 설문에 증거가 없으면 계정 증거도 만들지 않는다
+    assert rollup_verified_by([{"status": "success"}]) == ""
+    assert rollup_verified_by(
+        [{"status": "success", "verified_by": "completion_screen_verified"}, {"status": "closed"}]
+    ) == "surveys_verified: 1건"
+
+
+def test_account_node_with_rollup_evidence_is_not_demoted():
+    surveys = [{"status": "success", "verified_by": "completion_screen_verified"}]
+    account = {"status": rollup_account_status([s["status"] for s in surveys]), "surveys": surveys}
+    assert severity_of(account) == "alert"  # 증거 없으면 강등
+
+    account["verified_by"] = rollup_verified_by(surveys)
+    assert severity_of(account) == "ok"
 
 
 def test_run_survey_incomplete_bank_questions_payload(tmp_path, monkeypatch):

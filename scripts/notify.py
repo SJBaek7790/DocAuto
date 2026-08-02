@@ -1,13 +1,12 @@
 """Centralized Notification Gate module for DocAuto.
 
 Provides pure severity evaluation, message formatting (all / actionable modes),
-Telegram notification dispatch, and CLI interface.
+and Telegram notification dispatch.
 """
 
 import json
 import os
 import sys
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -61,20 +60,34 @@ def severity_of(val) -> str:
     return "quiet"
 
 
+LEVELS = ("all", "actionable")
+
+
+def resolve_level(level: str) -> str:
+    """알림 레벨 정규화. 빈 값·미지원 값은 'all'."""
+    lvl = (level or "all").strip().lower()
+    return lvl if lvl in LEVELS else "all"
+
+
 def should_send(results: dict, level: str) -> bool:
     """Determine whether notification should be sent based on level setting."""
-    lvl = (level or "all").strip().lower()
-    if lvl not in ("all", "actionable"):
-        lvl = "all"
-    if lvl == "all":
+    if resolve_level(level) == "all":
         return True
-    if lvl == "actionable":
-        sev = severity_of(results)
-        return SEVERITY_ORDER.get(sev, 0) >= SEVERITY_ORDER["action"]
-    return True
+    sev = severity_of(results)
+    return SEVERITY_ORDER.get(sev, 0) >= SEVERITY_ORDER["action"]
 
 
-def _short(text: str, limit: int = 200) -> str:
+def format_status_emoji(status: str) -> str:
+    return {
+        "success": "✅",
+        "already_done": "☑️",
+        "skipped": "⏭️",
+        "no_answer": "❓",
+        "failed": "❌",
+    }.get(status, "❓")
+
+
+def shorten(text: str, limit: int = 200) -> str:
     text = (text or "").strip()
     first_line = text.splitlines()[0] if text else text
     if len(first_line) > limit:
@@ -97,7 +110,7 @@ def _format_all_summary(results: dict, date_str: str) -> str:
                     prod = f" — {v['product']}" if v.get("product") else ""
                     lines.append(f"{prefix}*{k}*: {st}{prod}{pts}")
                     if v.get("message") and st not in ("success", "already_done"):
-                        lines.append(f"{prefix}  └ {_short(v['message'])}")
+                        lines.append(f"{prefix}  └ {shorten(v['message'])}")
                 else:
                     lines.append(f"{prefix}*{k}*:")
                 _render_dict(v, indent + 1)
@@ -115,7 +128,7 @@ def _format_all_summary(results: dict, date_str: str) -> str:
                 prod = f" — {v['product']}" if v.get("product") else ""
                 lines.append(f"*{k}*: {st}{prod}{pts}")
                 if v.get("message") and st not in ("success", "already_done"):
-                    lines.append(f"  └ {_short(v['message'])}")
+                    lines.append(f"  └ {shorten(v['message'])}")
                 _render_dict(v, 1)
             else:
                 lines.append(f"*{k}*:")
@@ -138,7 +151,7 @@ def _format_actionable_summary(results: dict, date_str: str) -> str:
                 if SEVERITY_ORDER.get(sev, 0) >= SEVERITY_ORDER["action"]:
                     has_items = True
                     status = data["status"]
-                    msg = _short(data.get("message", ""))
+                    msg = shorten(data.get("message", ""))
                     prod = f" — {data['product']}" if data.get("product") else ""
                     header_line = f"*{prefix}*: {status}{prod}"
                     if msg:
@@ -171,17 +184,36 @@ def _format_actionable_summary(results: dict, date_str: str) -> str:
 
 def build_message(results: dict, level: str, date_str: str) -> str:
     """Build summary message in specified level format."""
-    lvl = (level or "all").strip().lower()
-    if lvl not in ("all", "actionable"):
-        lvl = "all"
-    if lvl == "all":
-        return _format_all_summary(results, date_str)
-    elif lvl == "actionable":
+    if resolve_level(level) == "actionable":
         return _format_actionable_summary(results, date_str)
     return _format_all_summary(results, date_str)
 
 
 TELEGRAM_MAX_LEN = 4096
+
+
+def resolve_credentials(
+    bot_token: str = "", chat_id: str = "", credentials_path=None
+) -> tuple[str, str]:
+    """텔레그램 토큰/chat_id를 인자 → 환경변수 → credentials.json 순으로 해석한다."""
+    token = bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    cid = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+    if token and cid:
+        return token, cid
+
+    cpath = Path(credentials_path) if credentials_path else DEFAULT_CREDENTIALS
+    if cpath.exists():
+        try:
+            with open(cpath, "r", encoding="utf-8") as f:
+                creds = json.load(f)
+            t_block = creds.get("telegram", {})
+            if isinstance(t_block, dict):
+                token = token or t_block.get("bot_token", "")
+                cid = cid or t_block.get("chat_id", "")
+        except Exception as e:
+            print(f"[telegram] credentials 로드 실패: {e}", file=sys.stderr)
+
+    return token, cid
 
 
 def send_telegram(
@@ -192,22 +224,7 @@ def send_telegram(
     if not text:
         return True
 
-    token = bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    cid = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
-
-    if not token or not cid:
-        cpath = Path(credentials_path) if credentials_path else DEFAULT_CREDENTIALS
-        if cpath.exists():
-            try:
-                with open(cpath, "r", encoding="utf-8") as f:
-                    creds = json.load(f)
-                t_block = creds.get("telegram", {})
-                if isinstance(t_block, dict):
-                    token = token or t_block.get("bot_token", "")
-                    cid = cid or t_block.get("chat_id", "")
-            except Exception as e:
-                print(f"[telegram] credentials 로드 실패: {e}", file=sys.stderr)
-
+    token, cid = resolve_credentials(bot_token, chat_id, credentials_path)
     if not token or not cid:
         print("[telegram] 토큰/chat_id 없음", file=sys.stderr)
         return False
@@ -227,16 +244,3 @@ def send_telegram(
     except Exception as e:
         print(f"[telegram] 전송 실패: {e}", file=sys.stderr)
         return False
-
-
-def main():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Notification Gate CLI")
-    parser.add_argument("--level", choices=["all", "actionable"], default="all")
-    args = parser.parse_args()
-    print(f"Notification gate initialized with level: {args.level}")
-
-
-if __name__ == "__main__":
-    main()

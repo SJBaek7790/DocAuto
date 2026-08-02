@@ -125,16 +125,9 @@ venv/bin/python3 scripts/recon.py --item R3
 
 ## 미결 항목 (2026-08-01 배포 시점)
 
-### ① `actionable` 전환 전에 고칠 것 — 설문 롤업 강등
+### ~~① 설문 롤업 강등~~ — 2026-08-02 해결
 
-`seminar_survey.run_account`의 `rollup_account_status`가 `success`를 반환할 때 계정 레벨에 `verified_by`를 세우지 않는다. 개별 설문은 `verified_by`를 갖지만 상위 노드가 없어서 `_node_sev`가 `alert`로 강등한다.
-
-```
-설문 제출 성공  -> severity alert  (actionable에서 전송됨)
-전부 not_ready  -> severity quiet  (정상)
-```
-
-시끄러운 쪽(매 런 `not_ready`)은 이미 `quiet`이라 **급하지 않다.** 첫 1달은 `NOTIFY_LEVEL=all`이라 어차피 전량 수신한다. 영향은 "설문 성공 시 알림 1건". 롤업이 `success`를 낼 때 `output["verified_by"]`를 함께 세우면 끝. **`actionable` 전환 전까지 반드시 처리한다.**
+`seminar_survey.rollup_verified_by()`가 계정 레벨 `verified_by`를 만든다. 성공한 설문이 **전부** 개별 `verified_by`를 가질 때만 생성하므로, 증거 없는 성공은 여전히 `unverified`로 강등된다.
 
 ### ② 정찰 R1·R2 미수집 — 증거 판정이 아직 휴리스틱
 
