@@ -188,6 +188,10 @@ def send_telegram(
     text: str, bot_token: str = "", chat_id: str = "", credentials_path=None
 ) -> bool:
     """Send Telegram message via Telegram Bot API."""
+    # 보낼 내용이 없으면 자격증명 유무와 무관하게 no-op 성공
+    if not text:
+        return True
+
     token = bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
     cid = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -207,9 +211,6 @@ def send_telegram(
     if not token or not cid:
         print("[telegram] 토큰/chat_id 없음", file=sys.stderr)
         return False
-
-    if not text:
-        return True
 
     if len(text) > TELEGRAM_MAX_LEN:
         text = text[: TELEGRAM_MAX_LEN - 20] + "\n…(생략)"
