@@ -75,3 +75,46 @@ def test_task_live_seminar_no_target(monkeypatch):
     res = task_live_seminar(mock_page, stay_seconds=20, account="bjh7790")
     assert res["status"] == "no_target"
 
+
+def _live_page(monkeypatch, items):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("seminar_live.get_live_seminar_info", lambda p: items, raising=False)
+    return MagicMock()
+
+
+def test_task_live_seminar_already_entered_has_no_false_evidence(monkeypatch):
+    from seminar_live import task_live_seminar
+    page = _live_page(monkeypatch, [{"id": 5473, "title": "심포지엄"}])
+    state = {"date": "2026-08-02", "accounts": {"bjh7790": {"entered": [{"id": 5473}]}}}
+
+    res = task_live_seminar(page, stay_seconds=20, account="bjh7790", state=state)
+    assert res["status"] == "already_done"
+    assert "verified_by" not in res
+    assert res["already_entered"] == [5473]
+    assert res["entered"] == []
+
+
+def test_task_live_seminar_dry_run_has_no_false_evidence(monkeypatch):
+    from seminar_live import task_live_seminar
+    page = _live_page(monkeypatch, [{"id": 5473, "title": "심포지엄"}])
+
+    res = task_live_seminar(page, stay_seconds=20, account="bjh7790", dry_run=True)
+    assert res["status"] == "skipped"
+    assert "verified_by" not in res
+    assert res["skipped"] == [5473]
+
+
+def test_task_live_seminar_actual_entry_keeps_evidence(monkeypatch):
+    from seminar_live import task_live_seminar
+    page = _live_page(monkeypatch, [{"id": 5473, "title": "심포지엄"}])
+    monkeypatch.setattr(
+        "seminar_live.enter_and_wait",
+        lambda p, sid, secs: {"status": "success", "verified_by": "popup_acquired"},
+        raising=False,
+    )
+
+    res = task_live_seminar(page, stay_seconds=20, account="bjh7790")
+    assert res["status"] == "success"
+    assert res["verified_by"] == "popup_acquired"
+    assert res["entered"] == [5473]
+

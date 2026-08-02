@@ -431,12 +431,19 @@ def task_live_seminar(
         result["message"] = (
             f"입장 {len(entered)}건, 이미입장 {len(already_entered)}건, 스킵 {len(skipped)}건, 실패 {len(failed_list)}건."
         )
-    else:
+    elif entered:
+        # 이번 런에서 실제로 팝업을 잡은 경우에만 양성 증거를 붙인다.
         result["status"] = "success"
         result["verified_by"] = "popup_acquired"
         result["message"] = (
             f"입장 {len(entered)}건 완료, 이미입장 {len(already_entered)}건, 스킵 {len(skipped)}건."
         )
+    elif already_entered:
+        result["status"] = "already_done"
+        result["message"] = f"이미입장 {len(already_entered)}건, 스킵 {len(skipped)}건. 신규 입장 없음."
+    else:
+        result["status"] = "skipped"
+        result["message"] = f"스킵 {len(skipped)}건. 입장 가능한 세미나 없음."
 
     return result
 
