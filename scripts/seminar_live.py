@@ -530,7 +530,7 @@ def format_telegram_message(
         skipped = ls.get("skipped", [])
         failed = ls.get("failed", [])
 
-        lines.append(f"*{label}* {e}")
+        lines.append(f"{label} {e}")
         lines.append(
             f"  입장 {len(entered)}건(각 {stay_seconds}초) / 이미입장 {len(already_entered)}건 / 스킵 {len(skipped)}건 / 실패 {len(failed)}건"
         )

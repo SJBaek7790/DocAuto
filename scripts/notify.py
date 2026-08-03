@@ -7,6 +7,7 @@ and Telegram notification dispatch.
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -108,14 +109,14 @@ def _format_all_summary(results: dict, date_str: str) -> str:
                     st = v["status"]
                     pts = f" +{v['points']}P" if v.get("points") else ""
                     prod = f" — {v['product']}" if v.get("product") else ""
-                    lines.append(f"{prefix}*{k}*: {st}{prod}{pts}")
+                    lines.append(f"{prefix}{k}: {st}{prod}{pts}")
                     if v.get("message") and st not in ("success", "already_done"):
                         lines.append(f"{prefix}  └ {shorten(v['message'])}")
                 else:
-                    lines.append(f"{prefix}*{k}*:")
+                    lines.append(f"{prefix}{k}:")
                 _render_dict(v, indent + 1)
             elif isinstance(v, list):
-                lines.append(f"{prefix}*{k}*:")
+                lines.append(f"{prefix}{k}:")
                 for idx, item in enumerate(v):
                     if isinstance(item, dict):
                         _render_dict({f"[{idx}]": item}, indent + 1)
@@ -126,15 +127,15 @@ def _format_all_summary(results: dict, date_str: str) -> str:
                 st = v["status"]
                 pts = f" +{v['points']}P" if v.get("points") else ""
                 prod = f" — {v['product']}" if v.get("product") else ""
-                lines.append(f"*{k}*: {st}{prod}{pts}")
+                lines.append(f"{k}: {st}{prod}{pts}")
                 if v.get("message") and st not in ("success", "already_done"):
                     lines.append(f"  └ {shorten(v['message'])}")
                 _render_dict(v, 1)
             else:
-                lines.append(f"*{k}*:")
+                lines.append(f"{k}:")
                 _render_dict(v, 1)
         else:
-            lines.append(f"*{k}*: {v}")
+            lines.append(f"{k}: {v}")
 
     return "\n".join(lines)
 
@@ -153,7 +154,7 @@ def _format_actionable_summary(results: dict, date_str: str) -> str:
                     status = data["status"]
                     msg = shorten(data.get("message", ""))
                     prod = f" — {data['product']}" if data.get("product") else ""
-                    header_line = f"*{prefix}*: {status}{prod}"
+                    header_line = f"{prefix}: {status}{prod}"
                     if msg:
                         header_line += f" ({msg})"
                     lines.append(header_line.strip())
@@ -233,7 +234,7 @@ def send_telegram(
         text = text[: TELEGRAM_MAX_LEN - 20] + "\n…(생략)"
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({"chat_id": cid, "text": text, "parse_mode": "Markdown"}).encode("utf-8")
+    payload = json.dumps({"chat_id": cid, "text": text}).encode("utf-8")
     req = urllib.request.Request(
         url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
     )
@@ -241,6 +242,11 @@ def send_telegram(
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return resp.status == 200
+    except urllib.error.HTTPError as e:
+        # 400의 실제 사유(description)는 응답 본문에만 있다
+        body = e.read().decode("utf-8", "replace")[:300]
+        print(f"[telegram] 전송 실패: {e} / {body}", file=sys.stderr)
+        return False
     except Exception as e:
         print(f"[telegram] 전송 실패: {e}", file=sys.stderr)
         return False
