@@ -229,7 +229,7 @@ def determine_block_name(block_arg: str) -> str:
 
 def get_live_seminar_info(page) -> list[dict]:
     """/seminar/main에서 현재 '입장하기'가 뜬 세미나의 [{"id": "5473", "title": "..."}, ...] 목록을 순서·중복없이 반환."""
-    page.goto(doctorville.SEMINAR_MAIN_URL, wait_until="domcontentloaded")
+    common.goto_with_retry(page, doctorville.SEMINAR_MAIN_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
     page.wait_for_timeout(1500)  # SPA 렌더링 대기 (task_seminar와 동일 패턴)
 
     items = page.evaluate("""
@@ -277,7 +277,7 @@ def get_live_seminar_ids(page) -> list[str]:
 def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
     """단일 seminarId 상세 페이지로 이동해 '입장하기' 클릭 → 팝업창에서 stay_seconds초 대기 후 닫기."""
     detail_url = f"{doctorville.SEMINAR_DETAIL_URL}?seminarId={seminar_id}"
-    page.goto(detail_url, wait_until="domcontentloaded")
+    common.goto_with_retry(page, detail_url, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
     page.wait_for_timeout(1000)
 
     date_text = page.evaluate("""
@@ -478,7 +478,7 @@ def run_account(
         page.set_default_timeout(DEFAULT_TIMEOUT_MS)
 
         try:
-            page.goto(doctorville.ATTEND_URL, wait_until="load")
+            common.goto_with_retry(page, doctorville.ATTEND_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS)
             if not doctorville.ensure_logged_in(page, creds):
                 output["live_seminar"] = {"status": "failed", "message": "로그인 실패"}
                 browser.close()

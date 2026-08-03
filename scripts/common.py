@@ -11,7 +11,7 @@ import time
 from datetime import timezone, timedelta
 from pathlib import Path
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
 KST = timezone(timedelta(hours=9))
 RESERVED_KEYS = {"telegram"}
@@ -67,25 +67,27 @@ def save_screenshot(page, name_stem: str) -> str:
 
 
 def goto_with_retry(page, url: str, *, wait_until: str = "load", retries: int = 2, timeout_ms: int = 15000):
-    """page.goto 타임아웃 발생 시 재시도한다.
+    """page.goto 타임아웃 또는 네트워크 연결 오류(net::ERR_CONNECTION_CLOSED 등) 발생 시 재시도한다.
 
-    GitHub Actions 러너에서 간헐적으로 첫 요청만 15초 타임아웃으로 실패하고
-    바로 다음 같은 URL 요청은 정상 응답하는 사례가 확인됨(2026-07-21, hmp.py
-    _run_comment의 knowCommHome.hm goto 타임아웃 — 직후 _run_post가 같은 URL로
-    goto해서 바로 성공). 코드/셀렉터 문제가 아니라 네트워크 일시 지연으로 판단,
-    goto 자체에 재시도를 추가해 흡수한다.
+    GitHub Actions 러너 및 로컬 실행에서 간헐적으로 첫 요청만 15초 타임아웃 또는
+    순간 소켓 끊김(ERR_CONNECTION_CLOSED, ERR_CONNECTION_RESET)으로 실패하고
+    다음 같은 URL 요청은 정상 응답하는 사례가 확인됨. 코드/셀렉터 문제가 아니라
+    네트워크 일시 지연/서버 리셋으로 판단, goto 자체에 재시도를 추가해 흡수한다.
 
-    마지막 시도에서도 실패하면 PlaywrightTimeoutError를 그대로 전파한다.
+    마지막 시도에서도 실패하면 발생한 예외(PlaywrightTimeoutError / PlaywrightError)를 그대로 전파한다.
     """
     last_exc = None
     for attempt in range(retries + 1):
         try:
             page.goto(url, wait_until=wait_until, timeout=timeout_ms)
             return
-        except PlaywrightTimeoutError as e:
+        except (PlaywrightTimeoutError, PlaywrightError) as e:
             last_exc = e
             if attempt < retries:
-                page.wait_for_timeout(2000)
+                try:
+                    page.wait_for_timeout(2000)
+                except Exception:
+                    time.sleep(2)
                 continue
             raise last_exc
 

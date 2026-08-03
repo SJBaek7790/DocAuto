@@ -396,7 +396,7 @@ def _get_today_quiz_product(page) -> tuple[str | None, str | None, str | None]:
     없어 pId 조회 실패했던 문제 확인 후 수정).
     반환: (제품명, pId, quizId) — 각각 못 찾으면 None
     """
-    page.goto(PRODUCT_MAIN_URL, wait_until="domcontentloaded")
+    common.goto_with_retry(page, PRODUCT_MAIN_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
     page.wait_for_timeout(2000)  # SPA 로딩 대기
 
     # ".quiz_calender" 요소의 텍스트에서 제품명 추출
@@ -436,7 +436,7 @@ def _get_product_pid(page, product_name: str) -> str | None:
     /product/medicineList에서 제품명과 일치하는 링크의 pId를 반환한다.
     대소문자·공백 무시, 부분 일치.
     """
-    page.goto(MEDICINE_LIST_URL, wait_until="domcontentloaded")
+    common.goto_with_retry(page, MEDICINE_LIST_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
     page.wait_for_timeout(1000)
 
     links = page.locator("a[href*='productView']")
@@ -716,7 +716,7 @@ def task_quiz(page, creds: dict) -> dict:
 def task_seminar(page, creds: dict) -> dict:
     result = {"status": "failed", "applied": [], "count": 0}
 
-    page.goto(SEMINAR_MAIN_URL, wait_until="domcontentloaded")
+    common.goto_with_retry(page, SEMINAR_MAIN_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
     page.wait_for_timeout(1000)
 
     # 신청 가능 세미나 추출 (CLAUDE.md DOM 패턴)
@@ -739,7 +739,7 @@ def task_seminar(page, creds: dict) -> dict:
 
     for sid in seminar_ids:
         detail_url = f"{SEMINAR_DETAIL_URL}?seminarId={sid}"
-        page.goto(detail_url, wait_until="domcontentloaded")
+        common.goto_with_retry(page, detail_url, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
 
         btn = page.locator("a.btn_bn")
         try:
@@ -769,7 +769,7 @@ def task_seminar(page, creds: dict) -> dict:
             pass  # 모달 없는 세미나
 
         # 완료 확인 — 상세 페이지 재진입 후 a.btn_bn 텍스트 = "신청취소" 검증
-        page.goto(detail_url, wait_until="domcontentloaded")
+        common.goto_with_retry(page, detail_url, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
         try:
             btn_text = page.locator("a.btn_bn").inner_text()
             if "신청취소" in btn_text:
@@ -796,7 +796,7 @@ def task_seminar(page, creds: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 메인
 def run_precheck_quiz(page, credentials_path: str = None) -> dict:
-    page.goto(PRODUCT_MAIN_URL, wait_until="domcontentloaded")
+    common.goto_with_retry(page, PRODUCT_MAIN_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
     page.wait_for_timeout(2000)
 
     today_td = page.locator("td.today")
