@@ -60,6 +60,9 @@ import common
 ATTENDANCE_URL = "https://www.hmp.co.kr/event/attendanceRouletteMain.hm"
 COMM_HOME_URL = "https://www.hmp.co.kr/new/knowcomm/knowCommHome.hm"
 COMM_DETAIL_URL = "https://www.hmp.co.kr/new/knowcomm/knowCommBoardDetail.hm"
+# "나의 작성 글" 팝업. knowCommMyInfo.hm의 $KnowCommMyInfo.openMyPopup('BOARD')이
+# window.open 하는 URL과 동일하며, 직접 GET으로도 열린다 (정찰 2026-08-03).
+MY_POST_URL = "https://www.hmp.co.kr/new/knowcomm/knowCommMyInfoPopup.hm?schGbn=BOARD"
 DEFAULT_TIMEOUT_MS = 15000
 # 댓글 대상 후보 수 — 목록 상단 고정 게시물(공지·[지식스폰서])에 이미 옛날 댓글이
 # 달려 있어도 그 아래 최신글까지 훑어보기 위한 여유분.
@@ -437,6 +440,59 @@ def _comment_on_board(page, account: str, board_seq: str) -> dict:
     return result
 
 
+def kst_today_dot() -> str:
+    """오늘(KST)을 HMP 목록 표기와 같은 YYYY.MM.DD 형식으로 반환."""
+    from datetime import datetime, timezone, timedelta
+
+    return datetime.now(timezone(timedelta(hours=9))).strftime("%Y.%m.%d")
+
+
+def parse_post_dates(cell_texts: list[str]) -> list[str]:
+    """표 셀 텍스트 목록에서 YYYY.MM.DD 형태의 등록일자만 추려낸다."""
+    dates = []
+    for text in cell_texts:
+        stripped = text.strip()
+        if re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", stripped):
+            dates.append(stripped)
+    return dates
+
+
+def _already_posted_today(page, account: str) -> dict:
+    """'나의 작성 글' 목록을 조회해 오늘 이미 글을 썼는지 판정한다.
+
+    판정 근거 (2026-08-03 정찰, 실제 로그인 세션 DOM 조회):
+      - URL: knowCommMyInfoPopup.hm?schGbn=BOARD (window.open 대상이지만 직접 GET 가능)
+      - 표 헤더: 카테고리 / 협진과 / 제목 / 조회수 / 답변 / 좋아요 / 등록일자
+      - 데이터 행 마지막 td가 등록일자, 형식 "2026.08.03", 최신순 정렬
+      - 제목이 아니라 **날짜만** 본다. 오늘 이미 어떤 글이든 올렸으면 하루 1회
+        적립은 이미 끝났으므로 자동 글쓰기를 다시 할 이유가 없다.
+
+    목록을 못 읽으면 판정을 포기하고 글쓰기를 진행한다(fail-open). 중복 게시보다
+    "오늘 글이 아예 안 올라감"이 더 손해이고, 증거 없이 already_done으로 보고하면
+    안 되기 때문이다.
+    """
+    try:
+        common.goto_with_retry(
+            page, MY_POST_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS
+        )
+        page.wait_for_timeout(2000)
+        cells = page.locator("table tr td:last-child").all_inner_texts()
+    except Exception as e:
+        return {"posted": False, "checked": False, "message": f"내 글 목록 조회 실패: {e}"}
+
+    dates = parse_post_dates(cells)
+    if not dates:
+        return {"posted": False, "checked": False, "message": "등록일자 셀을 찾지 못함 — 셀렉터 변경 가능성."}
+
+    today = kst_today_dot()
+    return {
+        "posted": today in dates,
+        "checked": True,
+        "today_count": dates.count(today),
+        "message": "",
+    }
+
+
 def _run_post(page, account: str) -> dict:
     """지식커뮤니티에 매일 글 1개 작성.
 
@@ -707,8 +763,28 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
             # 지식커뮤니티 댓글 작성 (캡슐 결과와 무관하게 항상 시도)
             result["comment"] = _run_comment(page, account)
 
-            # 지식커뮤니티 글쓰기 (하루 1회, already_done 체크 없음)
-            result["post"] = _run_post(page, account)
+            # 지식커뮤니티 글쓰기 (하루 1회)
+            # 2026-08-03: 체크가 없어서 daily CI와 로컬 실행이 겹치면 같은 글이
+            # 하루에 3건까지 올라갔다("나의 작성 글"에서 확인). 서버의 내 글 목록을
+            # 근거로 오늘치가 이미 있으면 건너뛴다.
+            posted = _already_posted_today(page, account)
+            if posted["posted"]:
+                result["post"] = {
+                    "status": "already_done",
+                    "message": f"오늘({kst_today_dot()}) 이미 글 {posted['today_count']}건 작성됨.",
+                    "verified_by": "my_post_list_date_match",
+                }
+            else:
+                result["post"] = _run_post(page, account)
+                if not posted["checked"]:
+                    # 판정에 실패한 채로 글을 썼다 = 중복 게시 위험이 조용히 돌아온 상태.
+                    # post 자체는 성공했을 수 있으므로 post의 status를 왜곡하지 않고,
+                    # 별도 노드로 unverified(alert)를 올려 알림·exit 1을 유도한다.
+                    result["post_precheck"] = {
+                        "status": "unverified",
+                        "message": f"글쓰기 중복 판정 실패 — {posted['message']} 목록 셀렉터 확인 필요.",
+                        "screenshot": common.save_screenshot(page, f"hmp_{account}_postcheck"),
+                    }
 
         except Exception as e:
             result["message"] = f"예외 발생: {e}"

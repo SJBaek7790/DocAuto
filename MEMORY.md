@@ -55,6 +55,10 @@ DocAuto의 상세 지식 저장소. 셀렉터·파일 포맷·설계 근거·버
 - 룰렛: "룰렛 참여하기"(`onclick="roueletteAttendYnPopup(N)"`) → 확인 팝업 `.pop.cont` 처리 → `#startAbled` → `POST /ajax/event/rouelettePercentage.hm` → 결과 팝업 이미지 alt(`[마일리지] X 캡슐 적립 완료`).
 - 댓글: `a[onclick*="goDetail"]` 전체에서 boardSeq 수집 → **내림차순 상위 8개 순회** → `knowCommBoardDetail.hm?boardSeq=X` → "댓글" 토글 클릭 → `#cmtDiv` 바깥의 빈 `form.cmtForm textarea[name="cmtCntnt"]`에 "감사합니다" → `button[onclick*="saveCmt"]` → confirm → alert "저장 완료". 내 닉네임은 `form.cmtForm span` 첫 요소.
 - 글쓰기: `button.btnWrite` → `#writePopupDiv` → `#_topicNm` → `label:has-text("여행/취미")`(= `input[name="topicGbn"][value="TOPIC_13"]`) → `#title` → `iframe#innoditor_0` body + `#innoditorSource_0` → `#tag` "화이팅" Enter → `.botSubmit button[onclick*="saveBoard"]` → confirm → alert. AJAX: `POST /ajax/knowcomm/insertKnowCommBoard.hm`, `rtn_code==100` 성공.
+- 글쓰기 중복 방지(2026-08-03 추가): `knowCommMyInfoPopup.hm?schGbn=BOARD` = "나의 작성 글" 목록. `knowCommMyInfo.hm`의 `$KnowCommMyInfo.openMyPopup('BOARD')`이 `window.open` 하는 URL이며 직접 GET으로도 열린다. 표 컬럼 `카테고리/협진과/제목/조회수/답변/좋아요/등록일자`, 마지막 `td`가 등록일자(`2026.08.03` 형식, 최신순). 오늘 날짜(KST)가 있으면 `already_done`(`verified_by: my_post_list_date_match`). 목록을 못 읽으면 fail-open으로 글쓰기 진행.
+  - 배경: 체크가 없어서 daily CI와 로컬 실행이 겹치면 같은 글이 하루 3건까지 올라갔다(2026.08.03 실측: boardSeq 2525548·2525532·2525001).
+  - 대안이었던 `POST /ajax/knowcomm/getKnowCommMyInfoMonthChart.hm`도 `thisMonthActList[].monthDt`(`20260803`) + `boardCnt`로 같은 판정이 가능하다. 목록 표가 사람이 검증하기 쉬워 그쪽을 택했다.
+- 댓글은 이 중복 방지 대상이 **아니다**. 매일 다른 게시물에 1건 다는 것이 의도된 동작이라 날짜 기반 skip을 넣으면 하루치 지식내공 적립이 사라진다.
 
 ### 인터엠디 (`intermd.py`)
 - 로그인: `#memberId`, `#memberPw`, `button.loginForm__btn--login` → `/home.do`.
