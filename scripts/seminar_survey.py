@@ -623,7 +623,7 @@ def run_account(
         page.set_default_timeout(DEFAULT_TIMEOUT_MS)
 
         try:
-            page.goto(doctorville.ATTEND_URL, wait_until="load")
+            common.goto_with_retry(page, doctorville.ATTEND_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS)
             if not doctorville.ensure_logged_in(page, creds):
                 output["status"] = "failed"
                 output["message"] = "로그인 실패"

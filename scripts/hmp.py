@@ -671,7 +671,7 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
         try:
             # "load" 사용 — HMP 캡슐 버튼은 JS가 domcontentloaded 이후에 렌더링하므로
             # domcontentloaded만으로는 버튼이 아직 DOM에 없을 수 있다.
-            page.goto(ATTENDANCE_URL, wait_until="load")
+            common.goto_with_retry(page, ATTENDANCE_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS)
 
             # HMP는 미로그인 시 /login/loginForm.hm 로 리다이렉트되지만, URL 매칭보다
             # 로그인 폼 가시성으로 판단하는 편이 견고하다(keymedi.py 교훈, common.form_login 참조).
@@ -693,7 +693,7 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                 page.wait_for_load_state("domcontentloaded")
                 # 로그인 후 attendance 페이지로 리다이렉트 안 되는 경우 대비
                 if "attendanceRouletteMain" not in page.url:
-                    page.goto(ATTENDANCE_URL, wait_until="domcontentloaded")
+                    common.goto_with_retry(page, ATTENDANCE_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
 
             # 2026-07-07 확인: 페이지 리뉴얼로 #capsuleBtn / #capsuleBtnComplete ID 사라짐.
             # 새 버튼 텍스트: "오늘의 캡슐 받기". element 타입이 button인지 a인지 불명이므로

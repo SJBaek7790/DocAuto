@@ -41,7 +41,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import (
+    sync_playwright,
+    TimeoutError as PlaywrightTimeoutError,
+    Error as PlaywrightError,
+)
 
 import common
 import notify
@@ -271,8 +275,8 @@ def ensure_logged_in(page, creds: dict) -> bool:
             return False
         # mims는 Next.js SPA — networkidle 타임아웃 가능성 있어 domcontentloaded 사용
         try:
-            page.goto(mims_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
-        except PlaywrightTimeoutError:
+            common.goto_with_retry(page, mims_url, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
+        except (PlaywrightTimeoutError, PlaywrightError):
             pass  # 페이지는 이미 로드됨, input 대기는 _do_mims_login에서 처리
 
     # ③ mims 로그인 페이지
@@ -480,7 +484,7 @@ def task_quiz(page, creds: dict) -> dict:
 
     # 제품 상세 페이지 이동
     product_url = f"{DOCTORVILLE_BASE}/product/productView?pId={pid}"
-    page.goto(product_url, wait_until="domcontentloaded")
+    common.goto_with_retry(page, product_url, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
 
     # 퀴즈 완료 여부 확인
     quiz_banner = page.locator("#btn_quiz_banner")

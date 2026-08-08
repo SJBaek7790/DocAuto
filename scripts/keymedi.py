@@ -74,7 +74,7 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
         page.set_default_timeout(DEFAULT_TIMEOUT_MS)
 
         try:
-            page.goto(ATTENDANCE_URL, wait_until="domcontentloaded")
+            common.goto_with_retry(page, ATTENDANCE_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
 
             # 로그인 필요 여부는 URL이 아니라 폼(input[name=uid]) 가시성으로 판단한다.
             # (2026-07-06: 미로그인 시 별도 /login URL로 가지 않고 attendance URL
@@ -97,7 +97,7 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                 page.wait_for_load_state("domcontentloaded")
                 # 로그인 후 attendance 페이지로 리다이렉트 안 되는 경우 대비
                 if "/mypage/attendance" not in page.url:
-                    page.goto(ATTENDANCE_URL, wait_until="domcontentloaded")
+                    common.goto_with_retry(page, ATTENDANCE_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
 
             # 출석 관련 버튼(출석체크하기 or 출석완료)이 실제로 로드될 때까지 대기.
             # 범용 button 출현만 기다리면 네비/기타 버튼이 먼저 뜨는 시점에 count 체크를
