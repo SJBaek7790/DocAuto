@@ -67,8 +67,10 @@ def test_verified_by_contracts_all_10_modules():
     assert res_survey["verified_by"] == "completion_screen_verified"
 
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+import common
 from doctorville import task_seminar, task_attend
 from hmp import _run_roulette
 
@@ -82,17 +84,39 @@ def test_doctorville_seminar_apply_no_target():
     assert res["message"] == "신청 가능한 세미나 없음"
 
 
-def test_doctorville_attend_unverified_when_button_missing():
+def test_doctorville_attend_already_done_by_today_cell():
+    """진입만으로 출석 처리된 상태 — 달력의 오늘 셀이 유일한 날짜 확정 증거."""
     mock_page = MagicMock()
     mock_page.url = "https://www.doctorville.co.kr/event/attend"
-    mock_locator = MagicMock()
-    mock_locator.first.wait_for.side_effect = PlaywrightTimeoutError("Timeout")
-    mock_page.locator.return_value = mock_locator
+    today = datetime.now(common.KST).strftime("%Y-%m-%d")
+
+    def locator_side_effect(selector):
+        m = MagicMock()
+        m.count.return_value = 1 if f'td[data-date="{today}"]' in selector else 0
+        return m
+
+    mock_page.locator.side_effect = locator_side_effect
 
     with patch("doctorville.ensure_logged_in", return_value=True):
         res = task_attend(mock_page, {})
+    assert res["status"] == "already_done"
+    assert res["verified_by"] == f'td[data-date="{today}"] div.point.complete'
+
+
+def test_doctorville_attend_unverified_when_no_marker_and_no_button():
+    """오늘 셀 표식도 없고 출석 버튼도 보이지 않으면 증거 없음 → unverified."""
+    mock_page = MagicMock()
+    mock_page.url = "https://www.doctorville.co.kr/event/attend"
+    mock_locator = MagicMock()
+    mock_locator.count.return_value = 0
+    mock_locator.first.wait_for.side_effect = PlaywrightTimeoutError("Timeout")
+    mock_page.locator.return_value = mock_locator
+
+    with patch("doctorville.ensure_logged_in", return_value=True), \
+         patch("doctorville.save_screenshot", return_value=None):
+        res = task_attend(mock_page, {})
     assert res["status"] == "unverified"
-    assert res["message"] == "출석 버튼 없음 (날짜 미확인)"
+    assert res["message"] == "출석 버튼도 오늘 출석 표식도 없음"
 
 
 def test_hmp_roulette_unverified_on_popup_detection_failure():

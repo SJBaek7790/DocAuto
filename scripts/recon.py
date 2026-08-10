@@ -3,9 +3,11 @@
 
 구현 전에 DOM 사실만 확인한다. 클릭·제출 등 부작용 있는 동작은 하지 않는다.
 
+    python3 scripts/recon.py --item R2 --headed
     python3 scripts/recon.py --item R3 --headed
     python3 scripts/recon.py --item R4
 
+R2: 출석 페이지 진입만으로 출석이 처리된 뒤 남는 "오늘 출석됨" 표식
 R3: 세미나 상세의 시작 시각 표기 위치 (상태 파일 v2의 `start` 필드용)
 R4: 이달의 퀴즈 캘린더에서 내일 셀에 제품명·pId가 채워지는지 (모듈 1 성립 여부)
 
@@ -47,6 +49,102 @@ def dump_recon_data(item_id: str, data: dict, page=None) -> str:
 def _dump(item: str, data: dict) -> str:
     return dump_recon_data(item, data)
 
+
+# ---------------------------------------------------------------------------
+# R2: 출석 완료 표식 — 페이지 진입만으로 출석이 처리되어 버튼이 사라진 상태에서
+#     "오늘 날짜가 출석 처리됨"을 증명할 수 있는 DOM 표식을 찾는다.
+# ---------------------------------------------------------------------------
+
+ATTEND_JS = """
+(today) => {
+  const short = (s, n) => (s || '').replace(/\\s+/g, ' ').trim().slice(0, n);
+
+  // 1) 출석 버튼 존재 여부
+  const btns = Array.from(document.querySelectorAll('button, a'))
+    .filter(el => (el.innerText || '').includes('출석'))
+    .map(el => ({
+      tag: el.tagName, id: el.id || null, class: el.className || null,
+      text: short(el.innerText, 60), href: el.getAttribute('href')
+    }));
+
+  // 2) 달력형 셀 전수 — 오늘 셀의 클래스/자식 마크업이 핵심
+  const cellSel = 'td, li, .day, [class*="day"], [class*="date"], [class*="attend"]';
+  const cells = Array.from(document.querySelectorAll(cellSel))
+    .filter(el => el.children.length < 12)
+    .map(el => ({
+      tag: el.tagName, class: el.className || null,
+      text: short(el.innerText, 40),
+      html: short(el.outerHTML, 400),
+      hasToday: (el.innerText || '').includes(today.d) && el.className.length > 0,
+      imgs: Array.from(el.querySelectorAll('img')).map(i => ({
+        src: i.getAttribute('src'), alt: i.getAttribute('alt'), cls: i.className
+      }))
+    }))
+    .filter(c => c.text.length > 0)
+    .slice(0, 300);
+
+  // 3) "출석/적립/완료/일째/연속" 문구를 가진 모든 노드
+  const kw = ['출석', '적립', '완료', '일째', '연속', 'point', 'P'];
+  const textNodes = Array.from(document.querySelectorAll('body *'))
+    .filter(el => el.children.length === 0)
+    .map(el => ({
+      tag: el.tagName, class: el.className || null, id: el.id || null,
+      text: short(el.innerText, 80)
+    }))
+    .filter(n => n.text && kw.some(k => n.text.includes(k)))
+    .slice(0, 200);
+
+  // 4) 상태를 담을 법한 hidden input / data-* 속성
+  const inputs = Array.from(document.querySelectorAll('input')).map(el => ({
+    type: el.type, name: el.getAttribute('name'), id: el.id || null,
+    class: el.className || null, value: short(el.value, 60)
+  })).slice(0, 100);
+
+  const dataAttrs = Array.from(document.querySelectorAll('[data-date], [data-day], [data-attend], [data-status]'))
+    .map(el => ({
+      tag: el.tagName, class: el.className || null,
+      attrs: Object.fromEntries(Array.from(el.attributes).map(a => [a.name, a.value])),
+      text: short(el.innerText, 40)
+    })).slice(0, 100);
+
+  return {
+    url: location.href,
+    title: document.title,
+    today,
+    attendButtons: btns,
+    bodyText: short(document.body.innerText, 4000),
+    cells,
+    textNodes,
+    inputs,
+    dataAttrs
+  };
+}
+"""
+
+
+def recon_r2(page) -> dict:
+    """출석 페이지의 '오늘 출석됨' 표식 후보를 전수 덤프한다 (클릭하지 않음)."""
+    now = datetime.now(KST)
+    today = {
+        "iso": now.strftime("%Y-%m-%d"),
+        "d": str(now.day),
+        "md": f"{now.month}월 {now.day}일",
+        "dot": now.strftime("%Y.%m.%d"),
+    }
+
+    common.goto_with_retry(page, doctorville.ATTEND_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(3000)
+
+    data = {"pass1_on_entry": page.evaluate(ATTEND_JS, today)}
+    data["screenshot"] = common.save_screenshot(page, "recon_R2_entry")
+
+    # 진입만으로 출석이 처리된다면, 새로고침 후에도 동일 표식이 남아야 한다.
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_timeout(3000)
+    data["pass2_after_reload"] = page.evaluate(ATTEND_JS, today)
+    data["screenshot_reload"] = common.save_screenshot(page, "recon_R2_reload")
+
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +279,7 @@ def recon_r3(page, seminar_id: str | None) -> dict:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--item", required=True, choices=["R3", "R4"])
+    parser.add_argument("--item", required=True, choices=["R2", "R3", "R4"])
     parser.add_argument("--account", default="bjh7790")
     parser.add_argument("--seminar-id", default=None)
     parser.add_argument("--credentials", default="credentials.json")
@@ -201,7 +299,12 @@ def main():
                 print(json.dumps({"error": "로그인 실패"}, ensure_ascii=False))
                 sys.exit(1)
 
-            data = recon_r4(page) if args.item == "R4" else recon_r3(page, args.seminar_id)
+            if args.item == "R2":
+                data = recon_r2(page)
+            elif args.item == "R4":
+                data = recon_r4(page)
+            else:
+                data = recon_r3(page, args.seminar_id)
         finally:
             context.close()
             browser.close()

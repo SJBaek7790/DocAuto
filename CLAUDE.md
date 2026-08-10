@@ -30,7 +30,7 @@
 
 | 워크플로우 | 트리거 | 실행 순서 |
 |---|---|---|
-| `daily.yml` | cron-job.org 15:00 KST (주) + GitHub cron `0 7 * * *` (16:00 KST 백스톱) | ① inbox fetch → ② 닥터빌(출석·퀴즈) → ③ 키메디 → ④ HMP(캡슐·룰렛·댓글·글쓰기) → ⑤ 익일 퀴즈 사전 확인 (`daily_runner.py`) → 정답 커밋 |
+| `daily.yml` | cron-job.org 00:15 KST (주) + GitHub cron `0 7 * * *` (16:00 KST 백스톱) | ① inbox fetch → ② 닥터빌(출석·퀴즈) → ③ 키메디 → ④ HMP(캡슐·룰렛·댓글·글쓰기) → ⑤ 익일 퀴즈 사전 확인 (`daily_runner.py`) → 정답 커밋 |
 | `seminar_block.yml` | cron-job.org → `workflow_dispatch` (11:00~14:30, 17:00~21:30 KST 30분 간격) | ① inbox fetch (11:00 KST 런만) → ② 닥터빌 세미나 신청 (`doctorville.py --task seminar`) → ③ 라이브 세미나 입장 (`seminar_live.py`) → ④ 세미나 설문 (`seminar_survey.py`) |
 
 - 중앙 알림 게이트(`scripts/notify.py`)가 `NOTIFY_LEVEL` 환경변수 (미설정/빈값 시 `"all"` 기본값 / `"actionable"`)에 따라 알림 여부를 결정한다.
@@ -117,7 +117,7 @@ venv/bin/python3 scripts/recon.py --item R3
 ## 정책
 
 - **개인정보 활용 동의: 항상 동의**(`button.btn_confirm`). 사용자 사전 승인 완료(제3자 제공, 12개월 보유).
-- **텔레그램 정답 마감:** 닥터빌 퀴즈 정답은 **15:00 KST 이전** 도착분만 그날 daily 실행에 반영된다.
+- **텔레그램 정답 마감:** daily 주 실행이 **00:15 KST**라, 낮에 보낸 정답은 **그날 자정 런**에 반영된다(실질 마감 24:00). `precheck_quiz`가 익일 퀴즈를 미리 알려주므로 하루 여유가 있다.
 - **CI는 워킹트리가 아니라 HEAD를 돌린다.** 동작이 "옛날 코드" 같으면 `git show HEAD:<파일>`부터 확인.
 - **성공의 양성 증거 (`verified_by`):** `status: "success"`에는 항상 `verified_by`가 동반되어야 하며, 없으면 `unverified`(`alert`)로 강등된다.
 
@@ -129,14 +129,14 @@ venv/bin/python3 scripts/recon.py --item R3
 
 `seminar_survey.rollup_verified_by()`가 계정 레벨 `verified_by`를 만든다. 성공한 설문이 **전부** 개별 `verified_by`를 가질 때만 생성하므로, 증거 없는 성공은 여전히 `unverified`로 강등된다.
 
-### ② 정찰 R1·R2 미수집 — 증거 판정이 아직 휴리스틱
+### ② 정찰 R1 미수집 — 설문 증거 판정이 아직 휴리스틱
 
 `RECON=1` 환경변수로 실행해야 덤프된다. 기본 실행에는 영향 없다.
 
 | ID | 대상 | 현재 판정 방식 |
 |---|---|---|
 | R1 | 설문 완료 화면 문구 | `완료`/`감사`/`제출`/`참여`/`응답` 키워드 부분 일치 |
-| R2 | 닥터빌 출석 완료 표식 | `text=출석 완료, text=적립완료, text=출석완료` |
+| ~~R2~~ | ~~닥터빌 출석 완료 표식~~ | **2026-08-10 수집 완료** → `td[data-date="{today}"] div.point.complete` (`scripts/recon.py --item R2`). 상세는 [MEMORY.md](MEMORY.md) "닥터빌 셀렉터" |
 
 R1은 **실제 설문 제출이 일어나야** 수집되므로 며칠 걸린다. 수집 전까지 설문이 `unverified`를 내는 것은 예상된 동작이다. 산출물은 `scripts/logs/recon_*`에 남고 artifact로만 올라간다 — **커밋 금지**(설문 페이지에 이름·소속 포함).
 

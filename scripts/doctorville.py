@@ -314,6 +314,15 @@ def _do_mims_login(page, creds: dict) -> bool:
 # 태스크 ① 출석체크
 # ---------------------------------------------------------------------------
 
+def _attend_points(page, today_cell: str) -> int:
+    """오늘 셀 아이콘의 alt에서 적립 포인트를 읽는다(평상 100, 보너스일 500)."""
+    try:
+        alt = page.locator(f"{today_cell} img").first.get_attribute("alt")
+        return int(alt)
+    except Exception:
+        return 100
+
+
 def task_attend(page, creds: dict) -> dict:
     result = {"status": "failed", "points": 0}
 
@@ -327,14 +336,26 @@ def task_attend(page, creds: dict) -> dict:
     if "/event/attend" not in page.url:
         common.goto_with_retry(page, ATTEND_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
 
-    # 이미 완료 여부 확인 — 오늘 날짜 버튼에 체크마크 클래스가 있는 경우
-    # 버튼 텍스트 패턴: "N월 N일 출석하기"
-    attend_btn = page.locator('button:has-text("출석하기"), a:has-text("출석하기")')
+    # 이미 완료 여부 확인 — 달력의 오늘 셀이 유일하게 날짜까지 확정되는 증거다.
+    # `td[data-date="YYYY-MM-DD"] > div.point.complete` (미출석/미래 날짜는 `.complete` 없음).
+    # 출석은 페이지 진입만으로 처리되므로 이 확인이 먼저다 (R2 정찰, 2026-08-10).
+    today_cell = f'td[data-date="{datetime.now(common.KST):%Y-%m-%d}"] div.point.complete'
+    if page.locator(today_cell).count() > 0:
+        result["status"] = "already_done"
+        result["verified_by"] = today_cell
+        result["message"] = "출석 완료 (페이지 진입 시 자동 처리)."
+        return result
+
+    # 미출석 — "N월 N일 출석하기" 버튼이 보인다.
+    # 두 버튼(`btn.point_down` / `btn.complete`)이 항상 DOM에 공존하며 display로만
+    # 토글되므로, 존재 여부가 아니라 visible 여부로 판정해야 한다.
+    attend_btn = page.locator('button.btn.point_down, button:has-text("출석하기"), a:has-text("출석하기")')
     try:
         attend_btn.first.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
     except PlaywrightTimeoutError:
         result["status"] = "unverified"
-        result["message"] = "출석 버튼 없음 (날짜 미확인)"
+        result["message"] = "출석 버튼도 오늘 출석 표식도 없음"
+        result["screenshot"] = save_screenshot(page, "attend_no_marker")
         return result
 
     btn_text = attend_btn.first.inner_text().strip()
@@ -345,11 +366,10 @@ def task_attend(page, creds: dict) -> dict:
             "url_before": page.url,
         }
 
-    # "N월 N일 출석하기 ✓" 처럼 체크마크가 있으면 미완료(클릭 전)
-    # 실제로 닥터빌은 버튼을 클릭하면 팝업이 뜨고 완료됨
     attend_btn.first.click()
 
-    # 완료 팝업 — "오늘도 출석 완료" or "100point 적립완료" 텍스트
+    # 완료 팝업("오늘도 출석 완료" / "적립완료") — 숨김 상태로도 DOM에 상주하므로
+    # 반드시 visible 대기여야 한다(wait_for_selector 기본 state).
     try:
         page.wait_for_selector(
             "text=출석 완료, text=적립완료, text=출석완료",
@@ -369,15 +389,17 @@ def task_attend(page, creds: dict) -> dict:
         if close_btn.count() > 0:
             close_btn.first.click()
         result["status"] = "success"
-        result["verified_by"] = "attend_confirmed"
-        result["points"] = 100
-        result["message"] = "출석 완료, 100P 적립."
+        result["verified_by"] = "popup: 출석 완료"
+        result["points"] = _attend_points(page, today_cell)
+        result["message"] = f"출석 완료, {result['points']}P 적립."
     except PlaywrightTimeoutError:
-        # 팝업 없이 바로 완료 처리되는 경우도 있음 — 버튼 상태로 재확인
+        # 팝업 없이 바로 완료 처리되는 경우도 있음 — 달력 표식으로 재확인
         page.reload()
-        if page.locator("text=오늘도 출석").count() > 0 or "ico_finish" in (page.locator('#attend_btn, .btn_attend').first.get_attribute('class') or ''):
-            result["status"] = "already_done"
-            result["message"] = "출석 완료 (팝업 없이 처리됨)."
+        if page.locator(today_cell).count() > 0:
+            result["status"] = "success"
+            result["verified_by"] = today_cell
+            result["points"] = _attend_points(page, today_cell)
+            result["message"] = f"출석 완료, {result['points']}P 적립 (팝업 없이 처리됨)."
         else:
             result["message"] = "출석 버튼 클릭 후 완료 확인 실패."
             result["screenshot"] = save_screenshot(page, "attend_fail")

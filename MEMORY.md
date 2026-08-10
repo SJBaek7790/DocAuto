@@ -34,6 +34,15 @@ DocAuto의 상세 지식 저장소. 셀렉터·파일 포맷·설계 근거·버
 
 ### 닥터빌 (`doctorville.py`)
 - 로그인: `/intro` → `a[href*="mims-account.shop.co.kr"][href*="/login"]` → mims(`input[name="identifier"]`, `input[type="password"]`, `button[type="submit"]:has-text("로그인")`) → `wait_for_url("*doctorville.co.kr*")`.
+- 출석(`/event/attend`) — **R2 수집 완료(2026-08-10, 2계정 동일)**:
+  - **페이지 진입만으로 출석이 처리된다.** 버튼 클릭은 필요 없다.
+  - 출석 버튼 2개가 **항상 DOM에 공존**하고 `style="display:none"`으로 토글된다. 따라서 "버튼이 없다"는 판정은 성립하지 않는다 — **visible 여부로만 갈린다.**
+    - 미출석: `button.btn.point_down` = `"8월 10일 출석하기"` visible
+    - 출석완료: `button.btn.complete` = `"8월 10일 출석완료"` visible
+  - **날짜 확정 증거(권장 판정)**: 달력 `td[data-date="YYYY-MM-DD"] > div.point.complete`. 미래 날짜는 `div.point`만 있고 `.complete`가 없다. 텍스트 휴리스틱 불필요.
+  - 보너스 포인트도 읽힌다: 셀 안 `img[alt]`가 `100`(평일) / `500`(10일차 등 보너스).
+  - 완료 팝업 문구(`div.tit`="오늘도 출석 완료", `div.txt`="적립완료")는 **숨김 상태로도 DOM에 상주**한다. `text=출석 완료` 류 셀렉터가 오탐하기 쉬운 이유.
+  - 원본 덤프: `scripts/recon.py --item R2` → `scripts/logs/recon_R2_*.json`(커밋 금지).
 - 퀴즈 진입: `/product/main` → `.quiz_calender`에서 오늘 날짜 다음 줄 제품명 + `td.today` 내 hidden input `.pIdCls`의 pId → `/product/productView?pId=XXX`.
 - 퀴즈 레이어: `#quizLayerPop`(오버레이 `.layer_quiz`) / 문항 `.question_area` 반복(`.txt_question`, `ul.question_choice li input[name="an_N"][value="V"]` + `label`) / 문항수 `#questionCnt` / 제출 `.btn_answer` / 정답 `:text('정답입니다')` / 오답 `:text('오답입니다')` / 이미 완료 `:text('축하드립니다')` / 닫기 `.btn_cancel`.
 - 세미나 목록: `span.ico_apply` → `closest('a.list_detail')`의 `seminarId`.
@@ -141,8 +150,10 @@ GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-
 - Method / Body: `POST` / `{"ref":"main"}`
 - Headers: `Accept: application/vnd.github+json`, `Authorization: Bearer <PAT>`, `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`
 - Timezone: `Asia/Seoul`
-- Schedule: Minutes `0` / Hours `15` (15:00 KST 주 실행)
+- Schedule: Minutes `15` / Hours `0` (**00:15 KST 주 실행**)
 - 백스톱: GitHub schedule `0 7 * * *` (16:00 KST) 남김
+- **자정 직후로 잡은 이유(2026-08-10 확정):** 닥터빌·키메디·HMP 모두 00:00 KST에 리셋된다. 리셋 직후 실행해야 실패 시 그날 하루 전체가 재시도 여유로 남는다(15:00 실행이면 16:00 백스톱 1회가 전부). 부수 효과로 텔레그램 정답 실질 마감도 24:00까지 늘어난다 — `precheck_quiz`가 익일 퀴즈를 미리 알려주므로 낮에 보낸 답을 그날 자정 런이 소비한다.
+- 문서에 한동안 "15:00 KST"로 적혀 있었으나 실제 dispatch는 00:15 KST였다. 시각이 아니라 **문서가 틀렸던 것**이다.
 
 ---
 
@@ -169,6 +180,7 @@ GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-
 | 결과 팝업 셀렉터 | 쉼표 다중 셀렉터 + `text=` 혼용 불가 | `:text('정답입니다')` 단일 |
 | 퀴즈 already_done 미인식 | 제출 완료 시 "축하드립니다" 뷰라 `.btn_answer` 없음 | `:text('축하드립니다')` → `already_done` |
 | pId 조회 실패 | `/product/medicineList` 검색은 의약품 전용 — 모비케어 등 의료기기 미등록 | 캘린더 `td.today .pIdCls`에서 직접 추출(medicineList는 폴백만) |
+| 출석 매일 `unverified` → daily 백스톱 런이 매일 빨간불 (2026-08-05~10) | 출석은 **페이지 진입만으로 처리**되는데, 두 버튼이 DOM에 공존하며 `display`로만 토글된다. `button:has-text("출석하기")`는 매칭되지만 hidden이라 `wait_for(state="visible")`가 타임아웃 → "출석 버튼 없음(날짜 미확인)" | 버튼 대기 **이전에** `td[data-date="{today}"] div.point.complete` 확인 → `already_done` + `verified_by`. 클릭 후 폴백도 같은 표식으로 교체(기존 `#attend_btn, .btn_attend`는 실존하지 않는 셀렉터라 0개 매칭 시 예외). 포인트는 셀 `img[alt]`에서 읽음(100/보너스 500) |
 
 ### keymedi.py
 - 첫 성공 2026-07-06. 수정 순서: venv 전환 → 로그인 URL 매칭 대신 폼 가시성 → 클릭 후 폼 hidden 대기.
