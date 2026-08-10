@@ -34,7 +34,8 @@ DOM 근거 (2026-07-27 실측):
     설문 폼:  form[id^="surveyForm"], 문항 li[data-question-number],
       문항 텍스트 = label > div 첫 줄, 보기 = ol li label 안의
       input[type=radio|checkbox] + span.col-start-2
-    제출:     input[type=submit][value="제출하기"]
+    진행:     input[type=submit][value="제출하기"] (마지막 페이지)
+              여러 페이지 설문은 마지막 페이지 전까지 "다음" 버튼이 대신 나온다.
 """
 
 import argparse
@@ -87,6 +88,50 @@ def normalize_question(text: str) -> str:
     return t.rstrip("*").strip()
 
 
+# 같은 문항이 세미나마다 아래 정도의 차이로 다르게 렌더된다(실측): 공백 유무
+# ("30 mg"/"30mg"), 대소문자("Dapagliflozin"/"dapagliflozin"), 따옴표 종류,
+# 필수·복수응답 안내 문구 유무. 이 차이만으로 문제은행이 중복 키로 불어나므로
+# 대조용 정규화 키를 따로 둔다.
+_ANNOTATION_PATTERNS = (
+    re.compile(r"\*?\(\s*(?:최소|최대)\s*\d+\s*개\s*선택\s*\)"),
+    re.compile(r"\(\s*(?:복수\s*(?:응답|선택)|중복)\s*(?:가능)?\s*\)"),
+)
+
+
+def canonical_question(text: str) -> str:
+    """대조 전용 키. 표기 흔들림(공백·대소문자·구두점·안내문구)을 제거한다."""
+    t = normalize_question(text)
+    for pat in _ANNOTATION_PATTERNS:
+        t = pat.sub("", t)
+    t = t.lower()
+    return re.sub(r"[^0-9a-z가-힣]", "", t)
+
+
+def build_canonical_index(bank: dict) -> dict:
+    """canonical 키 → 값. 서로 다른 값으로 충돌하는 키는 버린다(오답 방지)."""
+    index, conflicts = {}, set()
+    for k, v in bank.items():
+        ck = canonical_question(k)
+        if not ck:
+            continue
+        if ck in index and index[ck] != v:
+            conflicts.add(ck)
+        else:
+            index[ck] = v
+    for ck in conflicts:
+        index.pop(ck, None)
+    return index
+
+
+def _coerce_answer(value):
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        items = [str(v).strip() for v in value if str(v).strip()]
+        return items or None
+    return None
+
+
 def load_bank(path: str | Path) -> dict:
     path = Path(path)
     if not path.exists():
@@ -99,20 +144,23 @@ def load_bank(path: str | Path) -> dict:
         return {}
 
 
-def lookup_answer(bank: dict, question: str):
+def lookup_answer(bank: dict, question: str, index: dict = None):
     """문제은행에서 문항의 답을 찾는다. 미등록이면 None.
+
+    ① 정규화 키 완전 일치 → ② canonical 키 일치(공백·대소문자·구두점·안내문구
+    무시) 순으로 대조한다. 유사도 기반 근사 매칭은 쓰지 않는다 — 이 문제은행에는
+    "1차 예방 당뇨병 환자에서…" / "1차 예방 중등도 위험군 환자에서…"처럼
+    difflib 유사도 0.92인 서로 다른 문항이 실제로 들어 있어, 근사 매칭은 오답을
+    제출한다.
 
     빈 문자열·빈 리스트는 "채워 넣기 대기 중"이므로 미등록으로 취급한다.
     """
-    value = bank.get(normalize_question(question))
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value.strip() or None
-    if isinstance(value, list):
-        items = [str(v).strip() for v in value if str(v).strip()]
-        return items or None
-    return None
+    answer = _coerce_answer(bank.get(normalize_question(question)))
+    if answer is not None:
+        return answer
+    if index is None:
+        index = build_canonical_index(bank)
+    return _coerce_answer(index.get(canonical_question(question)))
 
 
 def match_option(answer: str, options: list[str]) -> int | None:
@@ -141,9 +189,10 @@ def match_option(answer: str, options: list[str]) -> int | None:
 def resolve_page(questions: list[dict], bank: dict) -> tuple[list[dict], list[dict]]:
     """페이지의 문항들을 문제은행과 대조해 (적용계획, 미등록문항)을 만든다."""
     plan, missing = [], []
+    index = build_canonical_index(bank)
     for q in questions:
         text = q.get("question", "")
-        answer = lookup_answer(bank, text)
+        answer = lookup_answer(bank, text, index)
         options = [normalize(o["text"]) for o in q.get("options", [])]
 
         if answer is None:
@@ -230,11 +279,14 @@ def add_missing_to_bank(bank_path: str | Path, missing: list[dict]) -> int:
     """미등록 문항을 빈 값으로 문제은행에 추가한다. 추가된 개수 반환."""
     bank_path = Path(bank_path)
     bank = load_bank(bank_path)
+    canon = {canonical_question(k) for k in bank}
     added = 0
     for m in missing:
         key = m["question"]
-        if key not in bank:
+        ck = canonical_question(key)
+        if key not in bank and ck not in canon:
             bank[key] = ""
+            canon.add(ck)
             added += 1
     if added:
         from telegram_inbox import write_json_atomic
@@ -379,6 +431,69 @@ def dismiss_alerts(survey_page, max_rounds: int = 3) -> list[str]:
     return closed
 
 
+def classify_advance_label(label: str) -> str | None:
+    """버튼 라벨을 진행 종류로 분류한다. 'next' | 'submit' | None(누르면 안 되는 버튼).
+
+    "임시저장"에 '저장'이 들어가고 "이전"도 버튼이라, 눌러도 되는 라벨만 화이트리스트로
+    받는다.
+    """
+    t = normalize(label)
+    if not t:
+        return None
+    if any(bad in t for bad in ("이전", "취소", "임시", "저장", "닫기", "목록")):
+        return None
+    if "다음" in t:
+        return "next"
+    if "제출" in t or "완료" in t:
+        return "submit"
+    return None
+
+
+def page_fingerprint(questions: list[dict]) -> str:
+    """페이지 식별자. 제출 후에도 같은 페이지면 진행이 막힌 것이다."""
+    return "|".join(f"{q.get('number')}:{normalize_question(q.get('question', ''))}" for q in questions)
+
+
+def body_text(survey_page) -> str:
+    try:
+        if survey_page.is_closed():
+            return ""
+        return survey_page.evaluate("() => document.body ? document.body.innerText : ''") or ""
+    except Exception:
+        return ""
+
+
+ADVANCE_SELECTOR = (
+    'input[type=submit], button[type=submit], input[type=button], button, a[role="button"]'
+)
+
+
+def find_advance_button(survey_page):
+    """페이지 진행 버튼을 찾는다. (locator, 'next'|'submit') 또는 (None, None).
+
+    설문이 여러 페이지면 마지막 페이지 전까지는 "제출하기"가 아니라 "다음"이 나온다.
+    둘 다 보이면 'next'를 먼저 누른다 — 남은 페이지를 건너뛰고 제출해 버리는 쪽이
+    더 위험하기 때문이다.
+    """
+    candidates = survey_page.locator(ADVANCE_SELECTOR)
+    picked = {}
+    for i in range(candidates.count()):
+        el = candidates.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            label = el.get_attribute("value") or el.inner_text() or ""
+        except Exception:
+            continue
+        kind = classify_advance_label(label)
+        if kind and kind not in picked:
+            picked[kind] = el
+    for kind in ("next", "submit"):
+        if kind in picked:
+            return picked[kind], kind
+    return None, None
+
+
 def option_locator(survey_page, opt: dict):
     """보기 input의 로케이터. name이 비어 있는 문항이 있어 id → name → 위치 순으로 찾는다."""
     if opt.get("id"):
@@ -483,16 +598,12 @@ def run_survey(
 
     try:
         pages_done = 0
+        seen_pages = []
         for _ in range(MAX_PAGES):
             questions = read_questions(survey_page)
             if not questions:
                 if pages_done:
-                    page_text = ""
-                    try:
-                        if not survey_page.is_closed():
-                            page_text = survey_page.evaluate("() => document.body ? document.body.innerText : ''")
-                    except Exception:
-                        pass
+                    page_text = body_text(survey_page)
                     if verify_survey_completion_text(page_text):
                         result["status"] = "success"
                         result["verified_by"] = "completion_screen_verified"
@@ -511,6 +622,23 @@ def run_survey(
                     result["message"] = f"{prefix}{st}: 설문 창에 문항이 없음."
                 return result
 
+            # 진행 버튼을 눌렀는데 같은 문항이 다시 나오면 앞으로 못 간 것이다
+            # (필수 미응답 등). 같은 페이지를 반복 제출하지 않고 끊는다.
+            fp = page_fingerprint(questions)
+            if fp in seen_pages:
+                if pages_done and verify_survey_completion_text(body_text(survey_page)):
+                    result["status"] = "success"
+                    result["verified_by"] = "completion_screen_verified"
+                    result["pages"] = pages_done
+                    result["message"] = f"설문 제출 완료({pages_done}페이지)."
+                    return result
+                result["status"] = "failed"
+                result["pages"] = pages_done
+                result["message"] = f"{pages_done}페이지 진행 후에도 같은 문항이 다시 표시됨 — 중단."
+                result["screenshot"] = common.save_screenshot(survey_page, f"survey_{seminar_id}_stuck")
+                return result
+            seen_pages.append(fp)
+
             bank = load_bank(bank_path)
             plan, missing = resolve_page(questions, bank)
             if missing:
@@ -527,37 +655,26 @@ def run_survey(
 
             apply_plan(survey_page, plan)
             dismiss_alerts(survey_page)
-            submit = survey_page.locator('input[type=submit][value="제출하기"]')
-            if submit.count() == 0:
-                result["message"] = f"{pages_done + 1}페이지에서 제출 버튼을 찾지 못함."
+            advance, kind = find_advance_button(survey_page)
+            if advance is None:
+                result["message"] = f"{pages_done + 1}페이지에서 제출/다음 버튼을 찾지 못함."
                 result["screenshot"] = common.save_screenshot(survey_page, f"survey_{seminar_id}_nosubmit")
                 return result
-            submit.first.click()
+            advance.click()
             survey_page.wait_for_timeout(5000)
             pages_done += 1
 
-            completion_verified = False
             if not survey_page.is_closed():
                 dismiss_alerts(survey_page)
-                try:
-                    text = survey_page.evaluate("() => document.body ? document.body.innerText : ''")
-                    if verify_survey_completion_text(text):
-                        completion_verified = True
-                except Exception:
-                    pass
 
-            if common.is_recon_enabled():
+            if kind == "submit" and common.is_recon_enabled():
                 try:
                     from recon import dump_recon_data
                     url_str = ""
                     body_500 = ""
                     if not survey_page.is_closed():
                         url_str = survey_page.url
-                        try:
-                            body_text = survey_page.evaluate("() => document.body ? document.body.innerText : ''")
-                            body_500 = body_text[:500] if body_text else ""
-                        except Exception:
-                            pass
+                        body_500 = body_text(survey_page)[:500]
                     r1_data = {
                         "url": url_str,
                         "body": body_500,
@@ -568,18 +685,17 @@ def run_survey(
                 except Exception:
                     pass
 
-            if completion_verified:
-                result["status"] = "success"
-                result["verified_by"] = "completion_screen_verified"
-                result["pages"] = pages_done
-                result["message"] = f"설문 제출 완료({pages_done}페이지)."
-                return result
-
             if survey_page.is_closed():
+                # 창이 닫히면 완료 문구를 읽을 수 없다. 마지막이 "다음"이었다면
+                # 남은 페이지를 못 채운 것이므로 어느 쪽이든 양성 증거가 없다.
                 result["status"] = "unverified"
                 result["pages"] = pages_done
-                result["message"] = f"설문 제출 창이 닫혔으나 완료 화면 문구 미확인({pages_done}페이지)."
+                result["message"] = f"설문 창이 닫혔으나 완료 화면 문구 미확인({pages_done}페이지)."
                 return result
+
+            # 완료 판정은 다음 반복의 "문항 없음" 분기가 맡는다. 여기서 본문 문구만
+            # 보고 성공으로 끊으면, 뒷 페이지의 "제출"·"참여" 같은 단어에 걸려
+            # 미응답 페이지를 남긴 채 성공으로 보고하게 된다.
 
         result["message"] = f"페이지가 {MAX_PAGES}회를 넘어 중단."
         return result

@@ -137,3 +137,76 @@ def test_mark_survey_done_is_idempotent():
     mark_survey_done(state, "bjh7790", 1)
     mark_survey_done(state, "bjh7790", "1")
     assert state["accounts"]["bjh7790"]["survey"] == {"1": "done"}
+
+
+# --- canonical(유하게 대조) 매칭 -------------------------------------------
+
+def test_canonical_ignores_space_case_and_punctuation():
+    from seminar_survey import canonical_question
+    assert canonical_question("edoxaban 30 mg 처방") == canonical_question("Edoxaban 30mg 처방")
+    assert canonical_question("‘실제’ 진료에서") == canonical_question("'실제' 진료에서")
+
+
+def test_canonical_strips_required_and_multiselect_annotations():
+    from seminar_survey import canonical_question
+    base = "주요 이유는 무엇입니까?"
+    assert canonical_question(base + "*(최소 1개 선택)") == canonical_question(base)
+    assert canonical_question(base + " (복수 선택 가능)*(최소 1개 선택)") == canonical_question(base)
+    assert canonical_question(base + " (복수응답 가능)*(최대 6개 선택)") == canonical_question(base)
+
+
+def test_lookup_answer_matches_spacing_and_case_variant():
+    bank = {"Edoxaban 30mg 처방 경험이 있으십니까?": "2"}
+    assert lookup_answer(bank, "edoxaban 30 mg 처방 경험이 있으십니까?") == "2"
+
+
+def test_lookup_answer_matches_annotation_variant():
+    bank = {"주요 이유는 무엇입니까?": "2"}
+    assert lookup_answer(bank, "주요 이유는 무엇입니까? (복수 선택 가능)*(최소 1개 선택)") == "2"
+
+
+def test_lookup_answer_exact_key_wins_over_canonical():
+    bank = {"질문 A?": "1", "질문A?": "3"}
+    assert lookup_answer(bank, "질문 A?") == "1"
+
+
+def test_lookup_answer_rejects_conflicting_canonical_collision():
+    # 표기만 다른 두 키가 서로 다른 답을 들고 있으면 어느 쪽도 쓰지 않는다.
+    bank = {"질문 A?": "1", "질문A?": "3"}
+    assert lookup_answer(bank, "질  문  A?") is None
+
+
+def test_lookup_answer_does_not_fuzzy_match_similar_questions():
+    # 실제 문제은행에 있는 difflib 유사도 0.92짜리 서로 다른 문항.
+    bank = {"1차 예방 당뇨병 환자에서 스타틴 치료 시작 시 고려 기준은?": "2"}
+    assert lookup_answer(bank, "1차 예방 중등도 위험군 환자에서 스타틴 치료 시작 시 고려 기준은?") is None
+
+
+def test_add_missing_skips_canonical_duplicate(tmp_path):
+    bank_path = tmp_path / "survey_answers.json"
+    bank_path.write_text(json.dumps({"주요 이유는 무엇입니까?": ""}), encoding="utf-8")
+    added = add_missing_to_bank(bank_path, [{"question": "주요 이유는 무엇입니까?*(최소 1개 선택)", "options": []}])
+    assert added == 0
+    assert list(load_bank(bank_path)) == ["주요 이유는 무엇입니까?"]
+
+
+# --- 다음/제출하기 버튼 -----------------------------------------------------
+
+def test_classify_advance_label():
+    from seminar_survey import classify_advance_label
+    assert classify_advance_label("다음") == "next"
+    assert classify_advance_label("다음 페이지") == "next"
+    assert classify_advance_label("제출하기") == "submit"
+    assert classify_advance_label("설문 완료") == "submit"
+    assert classify_advance_label("이전") is None
+    assert classify_advance_label("임시저장") is None
+    assert classify_advance_label("닫기") is None
+    assert classify_advance_label("") is None
+
+
+def test_page_fingerprint_distinguishes_pages():
+    from seminar_survey import page_fingerprint
+    p1 = [{"number": "1", "question": "문항1"}]
+    p2 = [{"number": "2", "question": "문항2"}]
+    assert page_fingerprint(p1) == page_fingerprint([{"number": "1", "question": " 문항1 *"}])
+    assert page_fingerprint(p1) != page_fingerprint(p2)
