@@ -100,6 +100,7 @@ jobs:
 
       # Step 2: 닥터빌 세미나 신청 실행
       - name: 닥터빌 세미나 신청 실행
+        id: apply
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -109,6 +110,8 @@ jobs:
 
       # Step 3: 라이브 세미나 입장 실행
       - name: 라이브 세미나 입장 실행
+        id: live
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -123,6 +126,7 @@ jobs:
 
       # Step 4: 세미나 설문조사 실행
       - name: 세미나 설문조사 실행
+        id: survey
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -160,3 +164,21 @@ jobs:
           path: scripts/logs/
           if-no-files-found: ignore
           retention-days: 7
+
+      # 앞 스텝들이 continue-on-error인 이유는 한 단계가 죽어도 나머지를 계속
+      # 돌리기 위해서다. 그 부작용으로 스텝 conclusion이 success로 덮여 런이
+      # 초록으로 찍혔다(2026-08-10 실측: 설문 exit 1인데 런은 success).
+      # outcome은 failure로 남으므로 여기서 모아 런 전체를 실패시킨다.
+      - name: 실패 집계
+        if: always()
+        run: |
+          fail=0
+          for s in "세미나 신청:${{ steps.apply.outcome }}" \
+                   "라이브 입장:${{ steps.live.outcome }}" \
+                   "설문조사:${{ steps.survey.outcome }}"; do
+            if [ "${s##*:}" = "failure" ]; then
+              echo "::error::${s%%:*} 단계 실패"
+              fail=1
+            fi
+          done
+          exit $fail

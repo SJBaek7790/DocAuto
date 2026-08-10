@@ -21,6 +21,16 @@ def test_seminar_block_inbox_filter_and_dynamic_accounts():
     assert "scripts/seminar_live.py --account all" in block_content
     assert "scripts/seminar_survey.py --account all" in block_content
 
+def test_seminar_block_failures_reach_run_conclusion():
+    """continue-on-error가 스텝 실패를 초록으로 덮으므로 집계 게이트가 있어야 한다."""
+    repo_root = Path(__file__).resolve().parent.parent
+    block_content = (repo_root / ".github/workflows/seminar_block.yml").read_text("utf-8")
+    for step_id in ("apply", "live", "survey"):
+        assert f"id: {step_id}" in block_content
+        assert f"steps.{step_id}.outcome" in block_content
+    assert "실패 집계" in block_content
+
+
 def test_seminar_block_no_dead_account_input():
     repo_root = Path(__file__).resolve().parent.parent
     block_content = (repo_root / ".github/workflows/seminar_block.yml").read_text("utf-8")
