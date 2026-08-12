@@ -1,5 +1,104 @@
 import json
-from doctorville import load_quiz_answers_legacy, _record_answers, _evict_answers, _evict_legacy_answers
+from doctorville import (
+    consolidate_products,
+    load_quiz_answers_legacy,
+    lookup_legacy_seq,
+    lookup_product_bank,
+    normalize_product,
+    resolve_product_key,
+    _record_answers,
+    _evict_answers,
+    _evict_legacy_answers,
+)
+
+
+# --- 제품명 표기 흔들림 ------------------------------------------------------
+
+def test_normalize_product_collapses_space_and_punctuation():
+    assert normalize_product("프리스타일 리브레") == normalize_product("프리스타일리브레")
+    assert normalize_product("더-스피로킷") == normalize_product("더스피로킷")
+
+
+def test_normalize_product_keeps_suffix_distinct():
+    # "아림시스"와 "아림시스주"는 서로 다른 제품이고 정답도 다르다. 합치면 오답.
+    assert normalize_product("아림시스") != normalize_product("아림시스주")
+    assert normalize_product("리토바") != normalize_product("리토바젯")
+
+
+def test_lookup_product_bank_finds_spacing_variant():
+    answers = {"프리스타일 리브레": {"Q1": "A1"}}
+    assert lookup_product_bank(answers, "프리스타일리브레") == {"Q1": "A1"}
+
+
+def test_lookup_product_bank_merges_duplicate_keys():
+    answers = {"프리스타일리브레": {"Q1": "A1"}, "프리스타일 리브레": {"Q2": "A2"}}
+    assert lookup_product_bank(answers, "프리스타일 리브레") == {"Q1": "A1", "Q2": "A2"}
+
+
+def test_lookup_product_bank_does_not_borrow_from_other_product():
+    answers = {"아림시스": {"Q1": "A1"}}
+    assert lookup_product_bank(answers, "아림시스주") == {}
+
+
+def test_lookup_legacy_seq_finds_variant():
+    assert lookup_legacy_seq({"더-스피로킷": "342"}, "더스피로킷") == "342"
+
+
+def test_lookup_legacy_seq_refuses_conflicting_variants():
+    # 같은 제품인데 시퀀스가 다르다 — 어느 쪽이 맞는지 알 수 없으므로 찍지 않는다.
+    legacy = {"더-스피로킷": "342", "더스피로킷": "324"}
+    assert lookup_legacy_seq(legacy, "더 스피로킷") is None
+
+
+def test_lookup_legacy_seq_exact_key_still_wins_over_conflict():
+    # 렌더된 이름이 키와 정확히 일치하면 그 값을 쓴다(lookup_answer와 같은 우선순위).
+    # 충돌 감지는 어느 키와도 정확히 일치하지 않을 때만 작동한다.
+    legacy = {"더-스피로킷": "342", "더스피로킷": "324"}
+    assert lookup_legacy_seq(legacy, "더스피로킷") == "324"
+
+
+def test_lookup_legacy_seq_accepts_agreeing_variants():
+    legacy = {"프리스타일리브레": "111", "프리스타일 리브레": "111"}
+    assert lookup_legacy_seq(legacy, "프리스타일 리브레") == "111"
+
+
+def test_resolve_product_key_prefers_exact():
+    data = {"시너지아정": {}, "시너지아 정": {}}
+    assert resolve_product_key(data, "시너지아 정") == "시너지아 정"
+    assert resolve_product_key(data, "없는제품") == "없는제품"
+
+
+def test_consolidate_products_merges_into_richest_key():
+    data = {"프리스타일리브레": {}, "프리스타일 리브레": {"Q1": "A1", "Q2": "A2"}}
+    assert consolidate_products(data) == {"프리스타일 리브레": {"Q1": "A1", "Q2": "A2"}}
+
+
+def test_consolidate_products_leaves_distinct_products_alone():
+    data = {"아림시스": {"Q1": "A1"}, "아림시스주": {"Q1": "B1"}}
+    assert consolidate_products(data) == data
+
+
+def test_record_answers_writes_into_existing_variant_key(tmp_path, monkeypatch):
+    bank_file = tmp_path / "quiz_answers.json"
+    bank_file.write_text(json.dumps({"프리스타일 리브레": {"Q1": "A1"}}), encoding="utf-8")
+    monkeypatch.setattr("doctorville.QUIZ_ANSWERS_PATH", bank_file)
+
+    _record_answers("프리스타일리브레", [("Q2", "A2")])
+    updated = json.loads(bank_file.read_text(encoding="utf-8"))
+    # 새 중복 키를 만들지 않는다.
+    assert updated == {"프리스타일 리브레": {"Q1": "A1", "Q2": "A2"}}
+
+
+def test_evict_legacy_answers_removes_all_variants(tmp_path, monkeypatch):
+    legacy_file = tmp_path / "quiz_answers_legacy.json"
+    legacy_file.write_text(
+        json.dumps({"더-스피로킷": "342", "더스피로킷": "324", "우루사": "222"}), encoding="utf-8"
+    )
+    monkeypatch.setattr("doctorville.LEGACY_ANSWERS_PATH", legacy_file)
+
+    _evict_legacy_answers("더 스피로킷")
+    assert json.loads(legacy_file.read_text(encoding="utf-8")) == {"우루사": "222"}
+
 
 def test_load_quiz_answers_legacy(tmp_path, monkeypatch):
     legacy_file = tmp_path / "quiz_answers_legacy.json"

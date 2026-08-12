@@ -71,6 +71,86 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "").lower()
 
 
+def normalize_product(name: str) -> str:
+    """제품명 대조 키. 공백·구두점·대소문자 차이를 제거한다.
+
+    사이트가 같은 제품을 날마다 다르게 렌더한다(실측: "프리스타일리브레" /
+    "프리스타일 리브레", "더-스피로킷" / "더스피로킷"). 문자열 완전 일치로 조회하면
+    한 표기로 배운 답이 다른 표기에서 안 보여 `no_answer`로 떨어진다.
+
+    접미사가 다른 이름은 **합치지 않는다** — "아림시스"와 "아림시스주"는 실제로
+    서로 다른 제품이고 각각 다른 정답을 들고 있다. 부분 포함 매칭은 그래서 안 쓴다.
+    """
+    return re.sub(r"[^0-9a-z가-힣]", "", (name or "").lower())
+
+
+def resolve_product_key(data: dict, product: str) -> str:
+    """렌더된 제품명에 대응하는 기존 키. 없으면 렌더된 이름을 그대로 쓴다."""
+    if product in data:
+        return product
+    np = normalize_product(product)
+    if np:
+        for k in data:
+            if normalize_product(k) == np:
+                return k
+    return product
+
+
+def lookup_product_bank(answers: dict, product: str) -> dict:
+    """제품 문제은행. 표기만 다른 중복 키가 남아 있으면 합쳐서 돌려준다."""
+    np = normalize_product(product)
+    merged = {}
+    if np:
+        for k in sorted(answers):
+            v = answers[k]
+            if isinstance(v, dict) and normalize_product(k) == np:
+                merged.update(v)
+    exact = answers.get(product)
+    if isinstance(exact, dict):
+        merged.update(exact)
+    return merged
+
+
+def lookup_legacy_seq(legacy: dict, product: str) -> str | None:
+    """legacy 시퀀스. 표기 변형 키가 서로 다른 값이면 어느 쪽도 쓰지 않는다.
+
+    실제로 충돌이 있다: "더-스피로킷"=342 / "더스피로킷"=324. 둘 중 하나는 틀린
+    값이고 판별할 방법이 없으므로 찍지 않고 `no_answer`로 보낸다.
+    """
+    seq = legacy.get(product)
+    if isinstance(seq, str):
+        return seq
+    np = normalize_product(product)
+    if not np:
+        return None
+    hits = {v for k, v in legacy.items() if isinstance(v, str) and normalize_product(k) == np}
+    return hits.pop() if len(hits) == 1 else None
+
+
+def consolidate_products(data: dict) -> dict:
+    """표기만 다른 중복 제품 키를 하나로 합친다. 답이 많은 키가 대표가 된다."""
+    groups = {}
+    for k in data:
+        groups.setdefault(normalize_product(k), []).append(k)
+    out = {}
+    for keys in groups.values():
+        if len(keys) == 1:
+            out[keys[0]] = data[keys[0]]
+            continue
+        dicts = [k for k in keys if isinstance(data[k], dict)]
+        if not dicts:
+            out[sorted(keys)[0]] = data[sorted(keys)[0]]
+            continue
+        winner = max(sorted(dicts), key=lambda k: len(data[k]))
+        merged = {}
+        for k in sorted(dicts):
+            if k != winner:
+                merged.update(data[k])
+        merged.update(data[winner])
+        out[winner] = merged
+    return out
+
+
 def match_quiz_bank(product_name: str, bank: dict, legacy: dict) -> bool:
     norm_p = normalize_text(product_name)
     if not norm_p:
@@ -141,8 +221,9 @@ def load_quiz_answers_legacy() -> dict:
 def _record_answers(product: str, pairs: list[tuple[str, str]]) -> None:
     if not pairs:
         return
-    data = load_quiz_answers()
-    prod_dict = data.setdefault(product, {})
+    data = consolidate_products(load_quiz_answers())
+    key = resolve_product_key(data, product)
+    prod_dict = data.setdefault(key, {})
     for q_text, ans_text in pairs:
         prod_dict[q_text] = ans_text
     tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
@@ -156,6 +237,7 @@ def _evict_answers(product: str, q_texts: list[str]) -> None:
     if not q_texts or not QUIZ_ANSWERS_PATH.exists():
         return
     data = load_quiz_answers()
+    product = resolve_product_key(data, product)
     if product in data:
         for q_text in q_texts:
             data[product].pop(q_text, None)
@@ -170,11 +252,14 @@ def _evict_legacy_answers(product: str) -> None:
     if not LEGACY_ANSWERS_PATH.exists():
         return
     data = load_quiz_answers_legacy()
-    if product in data:
-        data.pop(product, None)
+    # 표기 변형 키까지 함께 지운다. 하나만 지우면 "더-스피로킷"/"더스피로킷" 같은
+    # 쌍이 계속 남아 legacy가 줄지 않는다.
+    np = normalize_product(product)
+    pruned = {k: v for k, v in data.items() if normalize_product(k) != np}
+    if len(pruned) != len(data):
         tmp_file = LEGACY_ANSWERS_PATH.with_suffix(".tmp")
         with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(pruned, f, ensure_ascii=False, indent=2)
             f.write("\n")
         os.replace(tmp_file, LEGACY_ANSWERS_PATH)
 
@@ -574,7 +659,7 @@ def task_quiz(page, creds: dict) -> dict:
     missing: list[dict] = []
 
     # 1. Bank 매칭 시도
-    product_bank = answers.get(product) if isinstance(answers.get(product), dict) else {}
+    product_bank = lookup_product_bank(answers, product)
     bank_plan = []
     bank_pairs = []
     bank_missing = []
@@ -608,7 +693,7 @@ def task_quiz(page, creds: dict) -> dict:
     else:
         # 2. Legacy 매칭 시도
         legacy_answers = load_quiz_answers_legacy()
-        legacy_seq = legacy_answers.get(product)
+        legacy_seq = lookup_legacy_seq(legacy_answers, product)
         legacy_indices = None
         if isinstance(legacy_seq, str):
             legacy_indices = legacy_to_choice_indices(legacy_seq, choices_per_q)
@@ -687,7 +772,11 @@ def task_quiz(page, creds: dict) -> dict:
         result["points"] = 500
         result["source"] = source
         if source == "legacy":
+            # 사이트가 정답으로 확인해 준 답이다. 문항텍스트→보기텍스트로 옮기면
+            # 위치 기반 시퀀스보다 항상 낫다 — 복사만 하고 legacy를 남기면 영영
+            # 줄지 않아 파일을 지울 수 없다.
             _record_answers(product, selected_pairs)
+            _evict_legacy_answers(product)
             result["learned"] = len(selected_pairs)
         else:
             result["learned"] = 0
@@ -723,6 +812,7 @@ def task_quiz(page, creds: dict) -> dict:
                 result["source"] = source
                 if source == "legacy":
                     _record_answers(product, selected_pairs)
+                    _evict_legacy_answers(product)
                     result["learned"] = len(selected_pairs)
                 else:
                     result["learned"] = 0
