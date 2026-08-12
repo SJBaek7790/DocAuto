@@ -162,7 +162,7 @@ def _format_actionable_summary(results: dict, date_str: str) -> str:
                     if status == "no_answer" and data.get("product"):
                         lines.append(f"  → quiz_answers.json에 {data['product']} 정답 추가")
                     if status == "incomplete_bank":
-                        lines.append("  → survey_answers.json 빈 값 추가")
+                        lines.append("  → survey_quiz_answers.json / survey_text_answers.json 빈 값 추가")
                     if "questions" in data:
                         lines.append(json.dumps(data["questions"], ensure_ascii=False, indent=2))
                     if "options" in data:

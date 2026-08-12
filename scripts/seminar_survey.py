@@ -4,7 +4,7 @@
 
 seminar_live.py로 입장에 성공한 세미나는 방송 팝업에서 설문에 참여할 수 있다.
 이 스크립트는 당일 입장 이력(scripts/state/seminar_entered.json)을 읽어 아직
-설문하지 않은 세미나만 골라, 문제은행(survey_answers.json) 기반으로 응답한다.
+설문하지 않은 세미나만 골라, 문항 종류별 규칙에 따라 응답한다.
 
 용법:
     python3 seminar_survey.py                     # 두 계정 순회 (헤드리스)
@@ -13,7 +13,19 @@ seminar_live.py로 입장에 성공한 세미나는 방송 팝업에서 설문�
     python3 seminar_survey.py --headed
     python3 seminar_survey.py --no-telegram
 
-문제은행 (survey_answers.json, 세미나 구분 없는 단일 파일):
+문항 3분류 (classify_question):
+    - quiz    — 화면 텍스트가 `[퀴즈]`로 시작하는 선택형. 정답이 존재하므로
+                추측 금지. survey_quiz_answers.json에서만 답을 찾는다.
+    - text    — 입력란(textarea / input[type=text])만 있는 주관식.
+                survey_text_answers.json에서 답을 찾는다.
+    - general — 나머지 선택형(만족도·선호도 등). 정답이 없으므로 족보를 보지 않고
+                항상 **2번 보기**를 고른다. 미등록으로 막히지 않는다.
+
+    `[퀴즈]` 배지는 같은 문항이라도 세미나에 따라 빠질 때가 있다(실측). 그래서
+    배지가 없더라도 **퀴즈 족보에 키가 이미 있으면 quiz로 분류**한다 — 값이 빈
+    문자열이면 general로 새는 대신 incomplete_bank로 막힌다.
+
+문제은행 (세미나 구분 없는 단일 파일, 형식은 세 파일 모두 동일):
     { "<문항 텍스트>": "<보기 번호 또는 답변 텍스트>" }
     - 선택형: 값이 숫자만이면 1-based 보기 번호("2" = 두 번째 보기).
       숫자가 아니면 보기 텍스트에 부분 포함으로 "유일 매칭"될 때만 선택한다.
@@ -22,6 +34,10 @@ seminar_live.py로 입장에 성공한 세미나는 방송 팝업에서 설문�
     - 값이 빈 문자열("")이면 항상 미등록으로 취급한다.
     - 번호는 위치 기반이라 같은 문항이라도 세미나마다 보기 순서가 다르면 오답이
       될 수 있다. 순서가 흔들릴 만한 문항은 텍스트로 적어두는 편이 안전하다.
+
+    survey_answers_legacy.json은 3분류 도입 전에 쌓인 단일 족보로, **읽기 전용
+    폴백**이다. quiz/text 족보에서 못 찾으면 여기서 한 번 더 찾는다. 새 키는
+    절대 쓰지 않는다(general 문항 "2"가 대부분이라 오염원이 된다).
 
 미등록 문항이 하나라도 있으면 그 페이지를 제출하지 않고 중단한다
 (status=incomplete_bank). 설문은 페이지 순차 제출형이라 뒷 페이지는 앞 페이지를
@@ -56,7 +72,9 @@ import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_TIMEOUT_MS = doctorville.DEFAULT_TIMEOUT_MS
-DEFAULT_BANK_FILE = SCRIPT_DIR.parent / "survey_answers.json"
+DEFAULT_QUIZ_BANK_FILE = SCRIPT_DIR.parent / "survey_quiz_answers.json"
+DEFAULT_TEXT_BANK_FILE = SCRIPT_DIR.parent / "survey_text_answers.json"
+DEFAULT_LEGACY_BANK_FILE = SCRIPT_DIR.parent / "survey_answers_legacy.json"
 DEFAULT_STATE_FILE = SCRIPT_DIR / "state" / "seminar_entered.json"
 BROADCAST_URL = "https://www.doctorville.co.kr/seminar/broadcastSeminarPopup?viewType=2&seminarId={sid}"
 MAX_PAGES = 10  # 무한 루프 방지 (실측 설문은 1~2페이지)
@@ -77,14 +95,21 @@ def verify_survey_completion_text(text: str) -> bool:
     return any(kw in text for kw in keywords)
 
 
+_QUIZ_BADGE_RE = re.compile(r"^\[\s*퀴즈\s*\]\s*")
+
+
+def is_quiz_badged(text: str) -> bool:
+    """화면 텍스트가 `[퀴즈]` 배지로 시작하는지."""
+    return bool(_QUIZ_BADGE_RE.match(normalize(text)))
+
+
 def normalize_question(text: str) -> str:
     """문항 텍스트를 문제은행 키 형태로 정규화한다.
 
     화면 텍스트에는 `[퀴즈]` 배지와 필수 표시 `*`가 붙는데, 같은 문항이 세미나에
     따라 배지 유무만 다르게 나오는 경우가 있어 둘 다 제거하고 키로 삼는다.
     """
-    t = normalize(text)
-    t = re.sub(r"^\[퀴즈\]\s*", "", t)
+    t = _QUIZ_BADGE_RE.sub("", normalize(text))
     return t.rstrip("*").strip()
 
 
@@ -163,6 +188,64 @@ def lookup_answer(bank: dict, question: str, index: dict = None):
     return _coerce_answer(index.get(canonical_question(question)))
 
 
+# --- 문항 3분류 + 족보 묶음 -------------------------------------------------
+
+GENERAL_OPTION_INDEX = 1  # 0-based → 2번 보기
+
+
+def load_banks(
+    quiz_path: str | Path = DEFAULT_QUIZ_BANK_FILE,
+    text_path: str | Path = DEFAULT_TEXT_BANK_FILE,
+    legacy_path: str | Path = DEFAULT_LEGACY_BANK_FILE,
+) -> dict:
+    """quiz / text / legacy 족보를 한 번에 읽어 묶는다.
+
+    `paths`에는 **쓰기 가능한** 족보만 담는다. legacy는 읽기 전용이라 빠진다.
+    """
+    return {
+        "quiz": load_bank(quiz_path),
+        "text": load_bank(text_path),
+        "legacy": load_bank(legacy_path),
+        "paths": {"quiz": Path(quiz_path), "text": Path(text_path)},
+        "legacy_path": Path(legacy_path),
+    }
+
+
+def bank_has_key(bank: dict, question: str) -> bool:
+    """값의 유무와 무관하게 키 자체가 족보에 있는지(정규화·canonical 양쪽으로)."""
+    if normalize_question(question) in bank:
+        return True
+    ck = canonical_question(question)
+    return bool(ck) and ck in {canonical_question(k) for k in bank}
+
+
+def classify_question(q: dict, quiz_bank: dict = None) -> str:
+    """문항 종류를 'quiz' | 'text' | 'general'로 판정한다."""
+    if q.get("kind") == "input":
+        return "text"
+    if is_quiz_badged(q.get("question", "")):
+        return "quiz"
+    # 배지가 빠져 렌더되는 세미나가 있어, 이미 퀴즈로 등록된 문항은 배지 없이도
+    # 퀴즈로 취급한다. 그러지 않으면 정답 있는 문항에 "2번"을 제출하게 된다.
+    if quiz_bank and bank_has_key(quiz_bank, q.get("question", "")):
+        return "quiz"
+    return "general"
+
+
+def lookup_in_banks(banks: dict, question: str, kind: str, indexes: dict = None):
+    """종류별 족보 → legacy 폴백 순으로 답을 찾는다. (답, 출처) 또는 (None, None).
+
+    출처가 "legacy"면 호출자가 승격 대상으로 표시한다(promote).
+    """
+    if indexes is None:
+        indexes = {k: build_canonical_index(banks.get(k, {})) for k in ("quiz", "text", "legacy")}
+    answer = lookup_answer(banks.get(kind, {}), question, indexes.get(kind))
+    if answer is not None:
+        return answer, kind
+    answer = lookup_answer(banks.get("legacy", {}), question, indexes.get("legacy"))
+    return (answer, "legacy") if answer is not None else (None, None)
+
+
 def match_option(answer: str, options: list[str]) -> int | None:
     """저장값에 해당하는 보기 인덱스. 판정 불가면 None.
 
@@ -179,33 +262,131 @@ def match_option(answer: str, options: list[str]) -> int | None:
         idx = int(a) - 1
         return idx if 0 <= idx < len(options) else None
     norm = [normalize(o) for o in options]
-    exact = [i for i, o in enumerate(norm) if o == a]
-    if len(exact) == 1:
-        return exact[0]
-    hits = [i for i, o in enumerate(norm) if a in o]
-    return hits[0] if len(hits) == 1 else None
+    # 표기 그대로 → canonical(공백·대소문자·구두점 무시) 순으로, 각 단계마다
+    # 완전 일치 → 부분 포함. 보기 텍스트를 답으로 적는 것이 기본 형식이라
+    # 하이픈 종류("–"/"-")나 괄호 앞뒤 공백 차이로 매칭이 깨지면 안 된다.
+    ca = canonical_question(a)
+    candidates = [(a, norm)]
+    if ca:
+        candidates.append((ca, [canonical_question(o) for o in options]))
+    for needle, hay in candidates:
+        exact = [i for i, o in enumerate(hay) if o == needle]
+        if len(exact) == 1:
+            return exact[0]
+        hits = [i for i, o in enumerate(hay) if needle and needle in o]
+        if len(hits) == 1:
+            return hits[0]
+    return None
 
 
-def resolve_page(questions: list[dict], bank: dict) -> tuple[list[dict], list[dict]]:
-    """페이지의 문항들을 문제은행과 대조해 (적용계획, 미등록문항)을 만든다."""
+def promotable_option_texts(indices: list[int], options: list[str]):
+    """legacy 보기 번호를 승격용 보기 텍스트로 바꾼다. 왕복 검증 실패 시 None.
+
+    번호는 위치 기반이라 다른 세미나에서 보기 순서가 바뀌면 오답이 된다. 텍스트는
+    순서에 무관하므로 승격은 항상 개선이다 — 단 **그 텍스트로 다시 찾았을 때 같은
+    보기가 유일하게 나올 때만**이다. 유일하지 않으면(보기 텍스트가 서로 포함
+    관계이거나 중복이면) 승격하지 않고 legacy 값을 그대로 둔다.
+    """
+    texts = []
+    for idx in indices:
+        if not 0 <= idx < len(options):
+            return None
+        text = options[idx]
+        if not text or match_option(text, options) != idx:
+            return None
+        texts.append(text)
+    if not texts:
+        return None
+    return texts[0] if len(texts) == 1 else texts
+
+
+def _evict_legacy_keys(legacy: dict, questions: list[str]) -> dict:
+    """승격된 문항의 키를 legacy에서 지운 사본을 만든다(표기 변형 키까지 함께)."""
+    targets = {canonical_question(q) for q in questions}
+    targets.discard("")
+    return {k: v for k, v in legacy.items() if canonical_question(k) not in targets}
+
+
+def apply_promotions(banks: dict, plan: list[dict]) -> dict:
+    """plan의 승격 표시를 실제 파일에 반영한다. {족보: 승격건수}.
+
+    승격은 legacy에서 종류별 족보로 **옮기는** 것이다 — 복사만 하면 legacy가
+    영영 줄지 않아 삭제할 수 없다.
+    """
+    promotions = [s["promote"] for s in plan if s.get("promote")]
+    if not promotions:
+        return {}
+
+    from telegram_inbox import write_json_atomic
+
+    counts, moved = {}, []
+    for name, path in banks.get("paths", {}).items():
+        items = [p for p in promotions if p["bank"] == name]
+        if not items:
+            continue
+        bank = load_bank(path)
+        for p in items:
+            bank[p["question"]] = p["answer"]
+            moved.append(p["question"])
+        write_json_atomic(path, dict(sorted(bank.items())))
+        banks[name] = bank
+        counts[name] = len(items)
+
+    legacy_path = banks.get("legacy_path")
+    if moved and legacy_path:
+        pruned = _evict_legacy_keys(banks.get("legacy", {}), moved)
+        if len(pruned) != len(banks.get("legacy", {})):
+            write_json_atomic(Path(legacy_path), dict(sorted(pruned.items())))
+            banks["legacy"] = pruned
+    return counts
+
+
+def resolve_page(questions: list[dict], banks: dict) -> tuple[list[dict], list[dict]]:
+    """페이지의 문항들을 종류별 규칙으로 풀어 (적용계획, 미등록문항)을 만든다.
+
+    일반 문항은 족보를 보지 않고 항상 2번 보기를 고르므로 미등록이 되지 않는다.
+    퀴즈·주관식만 미등록이 될 수 있고, 미등록 항목에는 채워 넣을 족보를 가리키는
+    `bank` 키가 붙는다(고를 보기 자체가 없으면 None).
+    """
     plan, missing = [], []
-    index = build_canonical_index(bank)
+    indexes = {k: build_canonical_index(banks.get(k, {})) for k in ("quiz", "text", "legacy")}
     for q in questions:
         text = q.get("question", "")
-        answer = lookup_answer(bank, text, index)
         options = [normalize(o["text"]) for o in q.get("options", [])]
 
-        if answer is None:
+        def _miss(bank_name):
             missing.append({
                 "question": normalize_question(text),
                 "options": [f"{i + 1}. {o}" for i, o in enumerate(options)],
+                "bank": bank_name,
             })
+
+        kind = classify_question(q, banks.get("quiz", {}))
+
+        if kind == "general":
+            if len(options) <= GENERAL_OPTION_INDEX:
+                # 보기가 2개 미만이면 "2번"이 존재하지 않는다. DOM 이상이므로
+                # 아무 보기나 찍지 않고 사람이 보게 남긴다.
+                _miss(None)
+                continue
+            plan.append({
+                "kind": "choice",
+                "targets": [q["options"][GENERAL_OPTION_INDEX]],
+            })
+            continue
+
+        answer, source = lookup_in_banks(banks, text, kind, indexes)
+        if answer is None:
+            _miss(kind)
             continue
 
         if q.get("kind") == "input":
             if isinstance(answer, list):
                 answer = " ".join(answer)
-            plan.append({"kind": "input", "name": q["name"], "value": answer})
+            step = {"kind": "input", "name": q["name"], "value": answer}
+            if source == "legacy":
+                step["promote"] = {"bank": kind, "question": normalize_question(text), "answer": answer}
+            plan.append(step)
             continue
 
         # 복수 선택은 리스트(["1", "3"])뿐 아니라 "1,3" 형태도 받는다.
@@ -221,15 +402,18 @@ def resolve_page(questions: list[dict], bank: dict) -> tuple[list[dict], list[di
                 break
             indices.append(idx)
         if indices is None:
-            missing.append({
-                "question": normalize_question(text),
-                "options": [f"{i + 1}. {o}" for i, o in enumerate(options)],
-            })
+            _miss(kind)
             continue
-        plan.append({
-            "kind": "choice",
-            "targets": [q["options"][i] for i in indices],
-        })
+        step = {"kind": "choice", "targets": [q["options"][i] for i in indices]}
+        if source == "legacy":
+            promoted = promotable_option_texts(indices, options)
+            if promoted is not None:
+                step["promote"] = {
+                    "bank": kind,
+                    "question": normalize_question(text),
+                    "answer": promoted,
+                }
+        plan.append(step)
     return plan, missing
 
 
@@ -292,6 +476,29 @@ def add_missing_to_bank(bank_path: str | Path, missing: list[dict]) -> int:
         from telegram_inbox import write_json_atomic
         write_json_atomic(bank_path, dict(sorted(bank.items())))
     return added
+
+
+def add_missing_to_banks(banks: dict, missing: list[dict]) -> dict:
+    """미등록 문항을 `bank` 키가 가리키는 족보에 나눠 넣는다. {족보: 추가건수}.
+
+    `bank`가 None인 항목(보기 자체가 없는 DOM 이상)은 어디에도 쓰지 않는다.
+    legacy는 읽기 전용이라 `banks["paths"]`에 없고, 따라서 절대 갱신되지 않는다.
+    """
+    counts = {}
+    for name, path in banks.get("paths", {}).items():
+        items = [m for m in missing if m.get("bank") == name]
+        if items:
+            counts[name] = add_missing_to_bank(path, items)
+    return counts
+
+
+BANK_LABELS = {"quiz": "퀴즈", "text": "주관식"}
+
+
+def format_bank_counts(counts: dict) -> str:
+    """{'quiz': 2, 'text': 1} → '퀴즈 2건, 주관식 1건'."""
+    parts = [f"{BANK_LABELS.get(k, k)} {v}건" for k, v in sorted(counts.items()) if v]
+    return ", ".join(parts) if parts else "추가 없음"
 
 
 def pending_seminar_ids(state: dict, account: str) -> list[int]:
@@ -553,14 +760,18 @@ def open_survey(page, seminar_id) -> tuple[object, str]:
 def run_survey(
     page,
     item_or_id,
-    bank_path: Path = DEFAULT_BANK_FILE,
+    bank_paths: dict = None,
     now_dt: datetime = None,
     now_kst: datetime = None,
     state: dict = None,
     state_file: Path = None,
     account: str = None,
 ) -> dict:
-    """세미나 1건의 설문을 처리한다."""
+    """세미나 1건의 설문을 처리한다.
+
+    bank_paths: {"quiz": ..., "text": ..., "legacy": ...} (없는 키는 기본 경로).
+    """
+    bank_paths = bank_paths or {}
     if now_dt is None:
         now_dt = now_kst
 
@@ -599,6 +810,7 @@ def run_survey(
     try:
         pages_done = 0
         seen_pages = []
+        promoted = {}
         for _ in range(MAX_PAGES):
             questions = read_questions(survey_page)
             if not questions:
@@ -639,19 +851,28 @@ def run_survey(
                 return result
             seen_pages.append(fp)
 
-            bank = load_bank(bank_path)
-            plan, missing = resolve_page(questions, bank)
+            banks = load_banks(
+                bank_paths.get("quiz", DEFAULT_QUIZ_BANK_FILE),
+                bank_paths.get("text", DEFAULT_TEXT_BANK_FILE),
+                bank_paths.get("legacy", DEFAULT_LEGACY_BANK_FILE),
+            )
+            plan, missing = resolve_page(questions, banks)
             if missing:
-                added = add_missing_to_bank(bank_path, missing)
+                counts = add_missing_to_banks(banks, missing)
                 result["status"] = "incomplete_bank"
                 result["missing"] = missing
                 result["questions"] = missing
                 prefix = f"[{title}] " if title else ""
                 result["message"] = (
                     f"{prefix}{pages_done + 1}페이지에 미등록 문항 {len(missing)}건 — 제출하지 않음"
-                    f"(survey_answers.json에 {added}건 빈 값 추가)."
+                    f"({format_bank_counts(counts)} 빈 값 추가)."
                 )
                 return result
+
+            for name, n in apply_promotions(banks, plan).items():
+                promoted[name] = promoted.get(name, 0) + n
+            if promoted:
+                result["promoted"] = dict(promoted)
 
             apply_plan(survey_page, plan)
             dismiss_alerts(survey_page)
@@ -713,7 +934,7 @@ run_survey_for_item = run_survey
 def run_account(
     account: str,
     credentials_path: Path,
-    bank_path: Path,
+    bank_paths: dict,
     headless: bool,
     seminar_ids: list,
     state: dict = None,
@@ -748,7 +969,7 @@ def run_account(
             for sid in seminar_ids:
                 try:
                     item = get_entered_item(state, account, sid)
-                    r = run_survey(page, item, bank_path, state=state, state_file=state_file, account=account)
+                    r = run_survey(page, item, bank_paths, state=state, state_file=state_file, account=account)
                 except Exception as e:
                     r = {"seminarId": int(sid) if str(sid).isdigit() else sid, "status": "failed", "message": f"예외 발생: {e}"}
                 output["surveys"].append(r)
@@ -784,7 +1005,9 @@ def main():
     parser = argparse.ArgumentParser(description="닥터빌 세미나 설문조사 자동 응답")
     parser.add_argument("--account", default="all", help="계정 ID (all 지정 시 전체 계정)")
     parser.add_argument("--credentials", default=str(SCRIPT_DIR.parent / "credentials.json"))
-    parser.add_argument("--bank-file", default=str(DEFAULT_BANK_FILE), help="survey_answers.json 경로")
+    parser.add_argument("--quiz-bank-file", default=str(DEFAULT_QUIZ_BANK_FILE), help="퀴즈 족보 경로")
+    parser.add_argument("--text-bank-file", default=str(DEFAULT_TEXT_BANK_FILE), help="주관식 족보 경로")
+    parser.add_argument("--legacy-bank-file", default=str(DEFAULT_LEGACY_BANK_FILE), help="구 단일 족보(읽기 전용) 경로")
     parser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE), help="seminar_entered.json 경로")
     parser.add_argument("--seminar-id", action="append", help="상태 무시하고 특정 세미나만 처리(반복 지정 가능)")
     parser.add_argument("--headed", action="store_true")
@@ -814,7 +1037,11 @@ def main():
         results[account] = run_account(
             account,
             Path(args.credentials),
-            Path(args.bank_file),
+            {
+                "quiz": Path(args.quiz_bank_file),
+                "text": Path(args.text_bank_file),
+                "legacy": Path(args.legacy_bank_file),
+            },
             headless=not args.headed,
             seminar_ids=ids,
             state=state,

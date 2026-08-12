@@ -123,9 +123,10 @@ def test_run_survey_cutoff_closed_and_state_update(tmp_path):
 
 
 def test_incomplete_bank_message_includes_title(tmp_path):
-    from seminar_survey import resolve_page, add_missing_to_bank
+    from seminar_survey import resolve_page, add_missing_to_banks, format_bank_counts
 
-    bank_file = tmp_path / "survey_answers.json"
+    quiz_file = tmp_path / "survey_quiz_answers.json"
+    banks = {"quiz": {}, "text": {}, "legacy": {}, "paths": {"quiz": quiz_file}}
 
     questions = [
         {
@@ -135,7 +136,7 @@ def test_incomplete_bank_message_includes_title(tmp_path):
             "options": [{"text": "보기1"}, {"text": "보기2"}],
         }
     ]
-    plan, missing = resolve_page(questions, {})
+    plan, missing = resolve_page(questions, banks)
     assert len(missing) == 1
 
     item = {
@@ -144,14 +145,15 @@ def test_incomplete_bank_message_includes_title(tmp_path):
         "start": "2026-08-10(월) 13:00 ~ 14:00",
     }
 
-    added = add_missing_to_bank(bank_file, missing)
+    counts = add_missing_to_banks(banks, missing)
     pages_done = 0
     prefix = f"[{item['title']}] " if item.get("title") else ""
     msg = (
         f"{prefix}{pages_done + 1}페이지에 미등록 문항 {len(missing)}건 — 제출하지 않음"
-        f"(survey_answers.json에 {added}건 빈 값 추가)."
+        f"({format_bank_counts(counts)} 빈 값 추가)."
     )
     assert "호흡기 심포지엄" in msg
+    assert "퀴즈 1건" in msg
 
 
 def test_mark_survey_status_closed():
@@ -199,8 +201,11 @@ def test_account_node_with_rollup_evidence_is_not_demoted():
 
 
 def test_run_survey_incomplete_bank_questions_payload(tmp_path, monkeypatch):
-    bank_file = tmp_path / "survey_answers.json"
-    bank_file.write_text("{}", encoding="utf-8")
+    bank_paths = {
+        "quiz": tmp_path / "survey_quiz_answers.json",
+        "text": tmp_path / "survey_text_answers.json",
+        "legacy": tmp_path / "survey_answers_legacy.json",
+    }
 
     mock_survey_page = MagicMock()
     mock_survey_page.is_closed.return_value = False
@@ -215,13 +220,14 @@ def test_run_survey_incomplete_bank_questions_payload(tmp_path, monkeypatch):
         }
     ])
 
-    res = run_survey(MagicMock(), 5473, bank_path=bank_file)
+    res = run_survey(MagicMock(), 5473, bank_paths=bank_paths)
     assert res["status"] == "incomplete_bank"
     assert "questions" in res
     assert res["questions"] == [
         {
             "question": "미등록 질문",
             "options": ["1. 보기1", "2. 보기2"],
+            "bank": "quiz",
         }
     ]
 

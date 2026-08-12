@@ -61,61 +61,275 @@ def _choice_q(text, options, base="userQuestions.0.optionIds"):
     }
 
 
+def _quiz_q(text, options, **kw):
+    return _choice_q(f"[퀴즈] {text}", options, **kw)
+
+
+def _banks(quiz=None, text=None, legacy=None):
+    return {"quiz": quiz or {}, "text": text or {}, "legacy": legacy or {}, "paths": {}}
+
+
 def test_resolve_page_all_known():
-    q = _choice_q("문항1", ["가", "나", "다"])
-    plan, missing = resolve_page([q], {"문항1": "나"})
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, missing = resolve_page([q], _banks(quiz={"문항1": "나"}))
     assert missing == []
     assert plan[0]["kind"] == "choice"
     assert plan[0]["targets"][0]["value"] == "1"
 
 
 def test_resolve_page_number_answer():
-    q = _choice_q("문항1", ["가", "나", "다"])
-    plan, missing = resolve_page([q], {"문항1": "2"})
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, missing = resolve_page([q], _banks(quiz={"문항1": "2"}))
     assert missing == []
     assert plan[0]["targets"][0]["value"] == "1"
 
 
 def test_resolve_page_comma_separated_numbers():
-    q = _choice_q("문항1", ["가", "나", "다"])
-    plan, missing = resolve_page([q], {"문항1": "1,3"})
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, missing = resolve_page([q], _banks(quiz={"문항1": "1,3"}))
     assert missing == []
     assert [t["value"] for t in plan[0]["targets"]] == ["0", "2"]
 
 
 def test_resolve_page_comma_in_text_answer_is_not_split():
-    q = _choice_q("문항1", ["가, 나 둘 다", "다"])
-    plan, missing = resolve_page([q], {"문항1": "가, 나 둘 다"})
+    q = _quiz_q("문항1", ["가, 나 둘 다", "다"])
+    plan, missing = resolve_page([q], _banks(quiz={"문항1": "가, 나 둘 다"}))
     assert missing == []
     assert plan[0]["targets"][0]["value"] == "0"
 
 
 def test_resolve_page_reports_missing_with_options():
-    q = _choice_q("문항1", ["가", "나"])
-    plan, missing = resolve_page([q], {})
+    q = _quiz_q("문항1", ["가", "나"])
+    plan, missing = resolve_page([q], _banks())
     assert plan == []
-    # 보기에는 입력할 번호가 붙어 나온다.
-    assert missing == [{"question": "문항1", "options": ["1. 가", "2. 나"]}]
+    # 보기에는 입력할 번호가 붙고, 채워 넣을 족보 이름이 함께 나온다.
+    assert missing == [{"question": "문항1", "options": ["1. 가", "2. 나"], "bank": "quiz"}]
 
 
 def test_resolve_page_unmatched_stored_value_is_missing():
-    q = _choice_q("문항1", ["가", "나"])
-    _, missing = resolve_page([q], {"문항1": "다"})
+    q = _quiz_q("문항1", ["가", "나"])
+    _, missing = resolve_page([q], _banks(quiz={"문항1": "다"}))
     assert len(missing) == 1
 
 
 def test_resolve_page_multi_select_list_value():
-    q = _choice_q("문항1", ["가", "나", "다"])
-    plan, missing = resolve_page([q], {"문항1": ["가", "다"]})
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, missing = resolve_page([q], _banks(quiz={"문항1": ["가", "다"]}))
     assert missing == []
     assert [t["value"] for t in plan[0]["targets"]] == ["0", "2"]
 
 
 def test_resolve_page_free_text():
     q = {"number": "1", "question": "의견을 적어주세요", "kind": "input", "name": "free.0", "options": []}
-    plan, missing = resolve_page([q], {"의견을 적어주세요": "좋았습니다"})
+    plan, missing = resolve_page([q], _banks(text={"의견을 적어주세요": "좋았습니다"}))
     assert missing == []
     assert plan == [{"kind": "input", "name": "free.0", "value": "좋았습니다"}]
+
+
+# --- 문항 3분류 -------------------------------------------------------------
+
+def test_is_quiz_badged():
+    from seminar_survey import is_quiz_badged
+    assert is_quiz_badged("[퀴즈] 문항") is True
+    assert is_quiz_badged("  [퀴즈]문항") is True
+    assert is_quiz_badged("문항 [퀴즈] 중간") is False
+    assert is_quiz_badged("만족하셨습니까?") is False
+
+
+def test_classify_question_three_kinds():
+    from seminar_survey import classify_question
+    assert classify_question({"kind": "input", "question": "의견은?"}) == "text"
+    assert classify_question(_quiz_q("문항1", ["가", "나"])) == "quiz"
+    assert classify_question(_choice_q("만족하셨습니까?", ["가", "나"])) == "general"
+
+
+def test_classify_question_uses_quiz_bank_when_badge_missing():
+    # 배지가 빠져 렌더되는 세미나가 있다. 퀴즈 족보에 있으면 배지 없이도 퀴즈다.
+    from seminar_survey import classify_question
+    q = _choice_q("렉사프로는 무엇입니까?", ["가", "나"])
+    assert classify_question(q, {"렉사프로는 무엇입니까?": "1"}) == "quiz"
+    assert classify_question(q, {}) == "general"
+
+
+def test_classify_question_quiz_bank_match_ignores_notation_drift():
+    from seminar_survey import classify_question
+    q = _choice_q("Edoxaban 30 mg 처방?", ["가", "나"])
+    assert classify_question(q, {"edoxaban 30mg 처방?": ""}) == "quiz"
+
+
+def test_general_question_always_picks_second_option():
+    q = _choice_q("이번 세미나에 만족하셨습니까?", ["매우 만족", "만족", "보통"])
+    plan, missing = resolve_page([q], _banks())
+    assert missing == []
+    assert [t["value"] for t in plan[0]["targets"]] == ["1"]
+
+
+def test_general_question_ignores_legacy_bank():
+    # 일반 문항은 족보를 아예 보지 않는다. legacy에 3번이 적혀 있어도 2번.
+    q = _choice_q("만족하셨습니까?", ["가", "나", "다"])
+    plan, _ = resolve_page([q], _banks(legacy={"만족하셨습니까?": "3"}))
+    assert [t["value"] for t in plan[0]["targets"]] == ["1"]
+
+
+def test_general_question_without_second_option_is_missing():
+    q = _choice_q("보기가 하나뿐", ["가"])
+    plan, missing = resolve_page([q], _banks())
+    assert plan == []
+    assert missing[0]["bank"] is None
+
+
+def test_quiz_falls_back_to_legacy_bank():
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, missing = resolve_page([q], _banks(legacy={"문항1": "3"}))
+    assert missing == []
+    assert [t["value"] for t in plan[0]["targets"]] == ["2"]
+
+
+def test_quiz_bank_wins_over_legacy():
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, _ = resolve_page([q], _banks(quiz={"문항1": "1"}, legacy={"문항1": "3"}))
+    assert [t["value"] for t in plan[0]["targets"]] == ["0"]
+
+
+def test_quiz_empty_placeholder_does_not_leak_to_general():
+    # 퀴즈 족보에 빈 값으로만 등록된 문항은 "2번 찍기"로 새면 안 된다.
+    q = _choice_q("렉사프로는 무엇입니까?", ["가", "나", "다"])
+    plan, missing = resolve_page([q], _banks(quiz={"렉사프로는 무엇입니까?": ""}))
+    assert plan == []
+    assert missing[0]["bank"] == "quiz"
+
+
+def test_free_text_falls_back_to_legacy():
+    q = {"number": "1", "question": "의견을 적어주세요", "kind": "input", "name": "free.0", "options": []}
+    plan, missing = resolve_page([q], _banks(legacy={"의견을 적어주세요": "좋았습니다"}))
+    assert missing == []
+    assert plan[0]["kind"] == "input"
+    assert plan[0]["value"] == "좋았습니다"
+    assert plan[0]["promote"] == {"bank": "text", "question": "의견을 적어주세요", "answer": "좋았습니다"}
+
+
+def test_free_text_missing_targets_text_bank():
+    q = {"number": "1", "question": "의견을 적어주세요", "kind": "input", "name": "free.0", "options": []}
+    _, missing = resolve_page([q], _banks())
+    assert missing[0]["bank"] == "text"
+
+
+# --- legacy → 종류별 족보 승격 ---------------------------------------------
+
+def test_legacy_number_is_promoted_as_option_text():
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, _ = resolve_page([q], _banks(legacy={"문항1": "3"}))
+    assert plan[0]["promote"] == {"bank": "quiz", "question": "문항1", "answer": "다"}
+
+
+def test_quiz_bank_hit_is_not_promoted():
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, _ = resolve_page([q], _banks(quiz={"문항1": "3"}))
+    assert "promote" not in plan[0]
+
+
+def test_promotion_survives_prefix_overlapping_options():
+    # 한 보기가 다른 보기의 접두사여도 완전 일치가 먼저라 왕복이 성립한다.
+    q = _quiz_q("문항1", ["체중 증가", "체중 증가 없음"])
+    plan, _ = resolve_page([q], _banks(legacy={"문항1": "1"}))
+    assert [t["value"] for t in plan[0]["targets"]] == ["0"]
+    assert plan[0]["promote"]["answer"] == "체중 증가"
+
+
+def test_promotion_skipped_when_option_text_is_ambiguous():
+    # 같은 텍스트의 보기가 둘이면 텍스트로는 되찾을 수 없다 — 승격하지 않는다.
+    q = _quiz_q("문항1", ["가", "가", "나"])
+    plan, _ = resolve_page([q], _banks(legacy={"문항1": "1"}))
+    assert [t["value"] for t in plan[0]["targets"]] == ["0"]
+    assert "promote" not in plan[0]
+
+
+def test_multi_select_legacy_promotes_list_of_texts():
+    q = _quiz_q("문항1", ["가", "나", "다"])
+    plan, _ = resolve_page([q], _banks(legacy={"문항1": "1,3"}))
+    assert plan[0]["promote"]["answer"] == ["가", "다"]
+
+
+def test_apply_promotions_moves_key_out_of_legacy(tmp_path):
+    from seminar_survey import apply_promotions
+    quiz_path = tmp_path / "survey_quiz_answers.json"
+    legacy_path = tmp_path / "survey_answers_legacy.json"
+    legacy = {"문항1": "3", "남는문항": "2"}
+    legacy_path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+    banks = {
+        "quiz": {}, "text": {}, "legacy": dict(legacy),
+        "paths": {"quiz": quiz_path}, "legacy_path": legacy_path,
+    }
+    plan = [{"kind": "choice", "targets": [],
+             "promote": {"bank": "quiz", "question": "문항1", "answer": "다"}}]
+    assert apply_promotions(banks, plan) == {"quiz": 1}
+    assert load_bank(quiz_path) == {"문항1": "다"}
+    # legacy에서는 빠진다 — 복사만 하면 legacy가 영영 줄지 않는다.
+    assert load_bank(legacy_path) == {"남는문항": "2"}
+    assert banks["legacy"] == {"남는문항": "2"}
+
+
+def test_apply_promotions_evicts_notation_variant_legacy_keys(tmp_path):
+    from seminar_survey import apply_promotions
+    quiz_path = tmp_path / "survey_quiz_answers.json"
+    legacy_path = tmp_path / "survey_answers_legacy.json"
+    legacy_path.write_text(json.dumps({"Edoxaban 30 mg 처방?": "2"}, ensure_ascii=False), encoding="utf-8")
+    banks = {
+        "quiz": {}, "text": {}, "legacy": {"Edoxaban 30 mg 처방?": "2"},
+        "paths": {"quiz": quiz_path}, "legacy_path": legacy_path,
+    }
+    plan = [{"kind": "choice", "targets": [],
+             "promote": {"bank": "quiz", "question": "edoxaban 30mg 처방?", "answer": "나"}}]
+    apply_promotions(banks, plan)
+    assert load_bank(legacy_path) == {}
+
+
+def test_apply_promotions_noop_without_promotions(tmp_path):
+    from seminar_survey import apply_promotions
+    assert apply_promotions({"paths": {}}, [{"kind": "choice", "targets": []}]) == {}
+
+
+# --- 보기 텍스트 매칭의 표기 흔들림 -----------------------------------------
+
+def test_match_option_tolerates_dash_and_spacing_variants():
+    opts = ["5mg - 궤양성 대장염", "10mg - 류마티스 관절염"]
+    assert match_option("10mg – 류마티스 관절염", opts) == 1
+    opts2 = ["PPG(Photoplethysmography)", "Oscillometric"]
+    assert match_option("PPG (Photoplethysmography)", opts2) == 0
+
+
+def test_match_option_canonical_fallback_still_requires_uniqueness():
+    # canonical로 뭉개면 두 보기가 같아진다 — 그 단계에서는 고르지 않는다.
+    opts = ["가-나", "가 나"]
+    assert match_option("가.나", opts) is None
+
+
+def test_match_option_exact_normalized_wins_before_canonical():
+    opts = ["가 나", "가나"]
+    assert match_option("가나", opts) == 1
+
+
+def test_add_missing_to_banks_routes_by_bank_key(tmp_path):
+    from seminar_survey import add_missing_to_banks, format_bank_counts
+    quiz_path = tmp_path / "survey_quiz_answers.json"
+    text_path = tmp_path / "survey_text_answers.json"
+    legacy_path = tmp_path / "survey_answers_legacy.json"
+    legacy_path.write_text(json.dumps({"기존": "2"}), encoding="utf-8")
+    banks = {
+        "quiz": {}, "text": {}, "legacy": {"기존": "2"},
+        "paths": {"quiz": quiz_path, "text": text_path},
+    }
+    counts = add_missing_to_banks(banks, [
+        {"question": "퀴즈문항", "options": [], "bank": "quiz"},
+        {"question": "주관식문항", "options": [], "bank": "text"},
+        {"question": "보기없음", "options": [], "bank": None},
+    ])
+    assert counts == {"quiz": 1, "text": 1}
+    assert load_bank(quiz_path) == {"퀴즈문항": ""}
+    assert load_bank(text_path) == {"주관식문항": ""}
+    # legacy는 읽기 전용 — 절대 갱신되지 않는다.
+    assert load_bank(legacy_path) == {"기존": "2"}
+    assert format_bank_counts(counts) == "퀴즈 1건, 주관식 1건"
 
 
 def test_add_missing_to_bank_writes_empty_placeholders(tmp_path):
