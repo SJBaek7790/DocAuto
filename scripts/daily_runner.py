@@ -7,7 +7,8 @@
   2. 닥터빌 (계정별 출석+퀴즈+세미나)
   3. HMP 캡슐 출석
   4. 내일 닥터빌 퀴즈 사전 점검
-  5. 결과를 notify 게이트를 거쳐 텔레그램 bot으로 전송
+  5. 세미나 신청 이력(seminar_applied.json)에서 날짜 지난 항목 정리
+  6. 결과를 notify 게이트를 거쳐 텔레그램 bot으로 전송
 
 용법:
     python3 scripts/daily_runner.py
@@ -155,6 +156,12 @@ def main():
         results[step_name] = run_script(script, script_args, timeout=timeout)
         indent = 2 if "doctorville" in step_name else None
         print(json.dumps(results[step_name], ensure_ascii=False, indent=indent))
+
+    # 세미나 신청 이력 정리 — 브라우저가 필요 없는 파일 작업이라 서브프로세스로
+    # 돌리지 않는다. 30분마다 도는 seminar_block이 아니라 여기서 하루 1회만 한다.
+    import doctorville
+    results["seminar_applied_prune"] = doctorville.prune_applied_file()
+    print(json.dumps(results["seminar_applied_prune"], ensure_ascii=False))
 
     print("\n=== 최종 결과 ===")
     print(json.dumps(results, ensure_ascii=False, indent=2))

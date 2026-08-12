@@ -61,6 +61,7 @@
 | `quiz_answers.json` | 닥터빌 퀴즈 문제은행 `{제품명: {문항텍스트: 정답보기텍스트}}` |
 | `quiz_answers_legacy.json` | 구형식 폴백 `{제품명: "111"}` (보기 번호 시퀀스 문자열) |
 | `intermd_answer.json` | 인터엠디 최신 정답 1건 `{answer, updated_at}` (덮어쓰기) |
+| `seminar_applied.json` | 세미나 신청 이력 `{계정: {seminarId: {applied_at, title, start}}}`. 목록에 없는 **새 세미나만** 상세 조회 |
 | `survey_quiz_answers.json` | 설문 **퀴즈** 족보 `{문항텍스트: 답변}` (`[퀴즈]` 배지 문항) |
 | `survey_text_answers.json` | 설문 **주관식** 족보 `{문항텍스트: 답변}` (입력란 문항) |
 | `survey_answers_legacy.json` | 3분류 도입 전 단일 족보. 폴백 전용이며 조회될 때마다 위 두 족보로 **승격·제거**된다(최종 삭제 목표) |

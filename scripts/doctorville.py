@@ -61,6 +61,8 @@ DEFAULT_TIMEOUT_MS  = 30000
 SCRIPT_DIR          = Path(__file__).resolve().parent
 QUIZ_ANSWERS_PATH   = SCRIPT_DIR.parent / "quiz_answers.json"
 LEGACY_ANSWERS_PATH = SCRIPT_DIR.parent / "quiz_answers_legacy.json"
+SEMINAR_APPLIED_PATH = SCRIPT_DIR.parent / "seminar_applied.json"
+APPLIED_RETENTION_DAYS = 60
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +264,155 @@ def _evict_legacy_answers(product: str) -> None:
             json.dump(pruned, f, ensure_ascii=False, indent=2)
             f.write("\n")
         os.replace(tmp_file, LEGACY_ANSWERS_PATH)
+
+
+# ---------------------------------------------------------------------------
+# 신청 이력 (seminar_applied.json)
+#
+# 세미나 목록의 `span.ico_apply` 배지는 "신청 가능 기간"을 뜻할 뿐 "내가 아직 신청
+# 안 함"이 아니다. 그래서 이미 신청한 세미나도 매 런마다 목록에 다시 나오고,
+# 상세 페이지를 열어봐야만 신청 여부를 알 수 있었다. 30분 간격 × 하루 18런 ×
+# 2계정이면 같은 상세를 하루 36번 다시 여는 셈이다.
+#
+# 신청이 확인된 seminarId를 기록해 두고, 목록에 없던 **새 세미나만** 상세로 간다.
+# 캐시가 아니라 커밋되는 파일인 이유: Actions 캐시 restore-key가 날짜 단위라
+# 하루가 지나면 사라지는데, 신청 이력은 방송일까지 며칠~몇 주 유지돼야 한다.
+# ---------------------------------------------------------------------------
+
+def load_applied(path: Path = None) -> dict:
+    path = Path(path or SEMINAR_APPLIED_PATH)
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_applied(data: dict, path: Path = None) -> None:
+    path = Path(path or SEMINAR_APPLIED_PATH)
+    tmp_file = path.with_suffix(".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp_file, path)
+
+
+def applied_ids(data: dict, account: str) -> set:
+    """계정의 신청 완료 seminarId 집합(문자열)."""
+    acc = data.get(account) if isinstance(data, dict) else None
+    return set(acc.keys()) if isinstance(acc, dict) else set()
+
+
+def filter_new_seminars(seminar_ids: list, data: dict, account: str) -> list:
+    """목록에서 아직 신청 이력이 없는 세미나만 남긴다(순서·중복 유지 안 함)."""
+    known = applied_ids(data, account)
+    seen = set()
+    out = []
+    for sid in seminar_ids:
+        s = str(sid)
+        if s in known or s in seen:
+            continue
+        seen.add(s)
+        out.append(sid)
+    return out
+
+
+def record_applied(data: dict, account: str, seminar_id, title: str = "", start: str = "", now=None) -> dict:
+    ts = (now or datetime.now(common.KST)).isoformat()
+    entry = {"applied_at": ts}
+    if title:
+        entry["title"] = title
+    if start:
+        entry["start"] = start
+    data.setdefault(account, {})[str(seminar_id)] = entry
+    return data
+
+
+def _entry_expiry(entry: dict, days: int, now):
+    """이력 1건이 만료됐는지. (만료여부, 사유)
+
+    ① `start`(상세 페이지 dd.date)가 파싱되면 **방송이 끝난 시각**이 기준이다.
+       지난 세미나는 다시 신청할 일이 없으므로 바로 버린다.
+    ② `start`가 없거나 파싱 실패면 `applied_at` + days일을 백스톱으로 쓴다.
+    """
+    if not isinstance(entry, dict):
+        return False, ""
+
+    start = entry.get("start")
+    if isinstance(start, str) and start:
+        # seminar_live는 doctorville을 import하므로 모듈 최상단에서 못 가져온다.
+        from seminar_live import parse_dd_date
+        s_dt, e_dt = parse_dd_date(start)
+        end = e_dt or s_dt
+        if end is not None:
+            return now > end, "past"
+
+    ts = entry.get("applied_at")
+    if isinstance(ts, str) and ts:
+        try:
+            dt = datetime.fromisoformat(ts)
+        except (ValueError, TypeError):
+            return False, ""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=common.KST)
+        return (now - dt).days > days, "stale"
+    return False, ""
+
+
+def prune_applied(data: dict, days: int = APPLIED_RETENTION_DAYS, now=None) -> tuple[dict, dict]:
+    """날짜가 지난 세미나를 이력에서 버린다. (남은 이력, {사유: 건수}).
+
+    잘못 버려도 자기 치유된다 — 다음 런에서 상세를 한 번 열어보고 "신청취소"를
+    확인하면 그대로 다시 기록된다.
+    """
+    now = now or datetime.now(common.KST)
+    out, counts = {}, {}
+    for acc, items in (data or {}).items():
+        if not isinstance(items, dict):
+            continue
+        kept = {}
+        for sid, entry in items.items():
+            expired, reason = _entry_expiry(entry, days, now)
+            if expired:
+                counts[reason] = counts.get(reason, 0) + 1
+            else:
+                kept[sid] = entry
+        if kept:
+            out[acc] = kept
+    return out, counts
+
+
+def prune_applied_file(path: Path = None, days: int = APPLIED_RETENTION_DAYS, now=None) -> dict:
+    """이력 파일을 정리해 저장한다. daily에서 하루 1회 부른다.
+
+    30분마다 도는 seminar_block에서 하지 않는 이유: 정리 자체가 파일을 바꿔
+    커밋을 만들기 때문이다. 지난 세미나가 이력에 남아 있어도 "상세를 열지 않는다"는
+    동작은 그대로 맞다 — 정리는 순전히 파일 크기 관리다.
+    """
+    path = Path(path or SEMINAR_APPLIED_PATH)
+    data = load_applied(path)
+    pruned, counts = prune_applied(data, days=days, now=now)
+    removed = sum(counts.values())
+    if removed:
+        save_applied(pruned, path)
+    total = sum(len(v) for v in pruned.values())
+    result = {
+        "removed": removed,
+        "remaining": total,
+        "by_reason": counts,
+        "message": f"신청 이력 정리: {removed}건 제거(잔여 {total}건).",
+    }
+    # status: "success"에 verified_by가 없으면 notify가 unverified(alert)로 강등해
+    # 런이 빨갛게 된다. 지울 게 없으면 성공이 아니라 skipped(quiet)가 맞다.
+    if removed:
+        result["status"] = "success"
+        result["verified_by"] = f"seminar_applied.json rewritten: -{removed}"
+    else:
+        result["status"] = "skipped"
+    return result
 
 
 def save_screenshot(page, tag: str) -> str:
@@ -829,7 +980,21 @@ def task_quiz(page, creds: dict) -> dict:
 # 태스크 ③ 세미나 신청
 # ---------------------------------------------------------------------------
 
-def task_seminar(page, creds: dict) -> dict:
+def _seminar_detail_meta(page) -> tuple[str, str]:
+    """상세 페이지의 (제목, 일시). 이력 파일에 남길 메타데이터일 뿐 판정에는 안 쓴다."""
+    try:
+        return tuple(page.evaluate("""
+            () => {
+                const t = document.querySelector('.tit, h2, h3');
+                const d = document.querySelector('dd.date');
+                return [t ? t.innerText.trim() : '', d ? d.innerText.trim() : ''];
+            }
+        """))
+    except Exception:
+        return "", ""
+
+
+def task_seminar(page, creds: dict, account: str = None, applied_path: Path = None) -> dict:
     result = {"status": "failed", "applied": [], "count": 0}
 
     common.goto_with_retry(page, SEMINAR_MAIN_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
@@ -853,7 +1018,14 @@ def task_seminar(page, creds: dict) -> dict:
     applied = []
     failed = []
 
-    for sid in seminar_ids:
+    # 정리(prune)는 daily가 하루 1회 맡는다. 여기서 하면 30분마다 파일이 바뀌어
+    # 커밋만 늘고, 지난 세미나가 남아 있어도 "상세를 안 연다"는 동작은 옳다.
+    applied_data = load_applied(applied_path)
+    targets = filter_new_seminars(seminar_ids, applied_data, account) if account else list(seminar_ids)
+    result["skipped_known"] = len(seminar_ids) - len(targets)
+    dirty = False
+
+    for sid in targets:
         detail_url = f"{SEMINAR_DETAIL_URL}?seminarId={sid}"
         common.goto_with_retry(page, detail_url, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
 
@@ -864,8 +1036,19 @@ def task_seminar(page, creds: dict) -> dict:
             failed.append(sid)
             continue
 
-        if "신청하기" not in (btn.inner_text() or ""):
-            # 이미 신청됨 or 마감
+        btn_text = btn.inner_text() or ""
+        title, start = _seminar_detail_meta(page)
+
+        if "신청취소" in btn_text:
+            # 이미 신청되어 있다. 기록해 두면 다음 런부터 상세를 열지 않는다 —
+            # 여기가 지금 낭비의 대부분이다.
+            if account:
+                record_applied(applied_data, account, sid, title, start)
+                dirty = True
+            continue
+
+        if "신청하기" not in btn_text:
+            # 마감·정원초과 등 신청 불가. 신청한 게 아니므로 기록하지 않는다.
             continue
 
         btn.click()
@@ -890,21 +1073,32 @@ def task_seminar(page, creds: dict) -> dict:
             btn_text = page.locator("a.btn_bn").inner_text()
             if "신청취소" in btn_text:
                 applied.append(int(sid))
+                # 기록은 "신청취소" 확인 후에만 한다. 클릭했다는 사실만으로
+                # 기록하면 실패한 신청을 영영 재시도하지 않게 된다.
+                if account:
+                    record_applied(applied_data, account, sid, title, start)
+                    dirty = True
             else:
                 failed.append(sid)
         except Exception:
             failed.append(sid)
 
+    if dirty:
+        save_applied(applied_data, applied_path)
+
     result["applied"] = applied
     result["count"] = len(applied)
 
+    skipped = result["skipped_known"]
+    suffix = f" (이력으로 상세 조회 생략 {skipped}건)" if skipped else ""
+
     if failed:
         result["status"] = "unverified"
-        result["message"] = f"신청 시도 후 상세 재확인 실패 — 완료 {len(applied)}건, 미검증 {len(failed)}건: {failed}"
+        result["message"] = f"신청 시도 후 상세 재확인 실패 — 완료 {len(applied)}건, 미검증 {len(failed)}건: {failed}{suffix}"
     else:
         result["status"] = "success"
         result["verified_by"] = "a.btn_bn: 신청취소"
-        result["message"] = f"신청 완료 {len(applied)}건."
+        result["message"] = f"신청 완료 {len(applied)}건{suffix}."
 
     return result
 
@@ -984,7 +1178,7 @@ def run(account: str, credentials_path: Path, headless: bool, tasks: list[str]) 
                 output["quiz"] = task_quiz(page, creds)
 
             if "seminar" in tasks:
-                output["seminar"] = task_seminar(page, creds)
+                output["seminar"] = task_seminar(page, creds, account=account)
 
             if "precheck_quiz" in tasks:
                 output["precheck_quiz"] = run_precheck_quiz(page, str(credentials_path))

@@ -79,6 +79,12 @@ DEFAULT_STATE_FILE = SCRIPT_DIR / "state" / "seminar_entered.json"
 BROADCAST_URL = "https://www.doctorville.co.kr/seminar/broadcastSeminarPopup?viewType=2&seminarId={sid}"
 MAX_PAGES = 10  # 무한 루프 방지 (실측 설문은 1~2페이지)
 
+# 설문 창은 열릴 때 즉시 열린다. 30초(DEFAULT_TIMEOUT_MS)는 "안 열림"을 확인하는
+# 데만 쓰이는 시간이었다. 아직 설문이 안 열린 세미나는 done/closed가 찍힐 때까지
+# 30분마다 재시도되므로, 이 대기가 설문 스텝 247초 중 180초를 먹고 있었다
+# (실측: 세미나 3건 × 계정 2개 × 30초).
+SURVEY_POPUP_TIMEOUT_MS = 8000
+
 
 # ---------------------------------------------------------------------------
 # 순수 함수 (테스트 대상)
@@ -742,7 +748,7 @@ def open_survey(page, seminar_id) -> tuple[object, str]:
     if start.count() == 0:
         return None, "설문 안내 레이어에서 '설문하기' 버튼을 찾지 못함."
     try:
-        with page.expect_popup(timeout=DEFAULT_TIMEOUT_MS) as popup_info:
+        with page.expect_popup(timeout=SURVEY_POPUP_TIMEOUT_MS) as popup_info:
             start.first.click()
         survey_page = popup_info.value
     except PlaywrightTimeoutError:
