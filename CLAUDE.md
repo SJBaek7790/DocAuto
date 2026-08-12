@@ -61,7 +61,9 @@
 | `quiz_answers.json` | 닥터빌 퀴즈 문제은행 `{제품명: {문항텍스트: 정답보기텍스트}}` |
 | `quiz_answers_legacy.json` | 구형식 폴백 `{제품명: "111"}` (보기 번호 시퀀스 문자열) |
 | `intermd_answer.json` | 인터엠디 최신 정답 1건 `{answer, updated_at}` (덮어쓰기) |
-| `survey_answers.json` | 설문 문제은행 `{문항텍스트: 답변}` (세미나 무관 단일 파일) |
+| `survey_quiz_answers.json` | 설문 **퀴즈** 족보 `{문항텍스트: 답변}` (`[퀴즈]` 배지 문항) |
+| `survey_text_answers.json` | 설문 **주관식** 족보 `{문항텍스트: 답변}` (입력란 문항) |
+| `survey_answers_legacy.json` | 3분류 도입 전 단일 족보. 폴백 전용이며 조회될 때마다 위 두 족보로 **승격·제거**된다(최종 삭제 목표) |
 | `scripts/state/seminar_entered.json` | 세미나 입장·설문 이력 (State v2 schema, Actions cache 유지) |
 | `credentials.json` | 로컬 전용(gitignore). CI는 `CREDENTIALS_JSON` secret |
 | `scripts/logs/` | 실패 스크린샷 (artifact 7일 보관) |
@@ -76,7 +78,8 @@ credentials 스키마·계정별 id 규칙 → [MEMORY.md](MEMORY.md) "credentia
 무인 실행이므로 일상 개입 없음. 개입 조건은 텔레그램 알림뿐이다.
 
 1. `no_answer` 알림 → 알림에 포함된 문항·보기 JSON을 그대로 `quiz_answers.json`에 채운다.
-2. `incomplete_bank` 알림 → `survey_answers.json`의 빈 값을 채운다(키는 스크립트가 이미 생성).
+2. `incomplete_bank` 알림 → 알림의 각 문항에 붙은 `bank` 값(`quiz`/`text`)이 가리키는 족보(`survey_quiz_answers.json` / `survey_text_answers.json`)의 빈 값을 채운다(키는 스크립트가 이미 생성).
+   일반 문항은 항상 2번으로 자동 제출되므로 여기 올라오지 않는다. `bank: null`이면 보기가 2개 미만인 DOM 이상이니 스크린샷을 본다.
 3. `failed` / `unverified` 알림 → 텔레그램 메시지보다 **Actions artifact 스크린샷을 먼저** 본다(`gh run download <run-id>`).
 4. 연속 출석일이 10의 배수에 근접하면 룰렛 안내.
 
