@@ -16,6 +16,13 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, Error as
 KST = timezone(timedelta(hours=9))
 RESERVED_KEYS = {"telegram"}
 
+# 미등록 문항을 족보에 넣을 때, 값 자리에 보기 전부를 이 표시와 함께 깔아둔다.
+# 사람이 정답만 남기고 나머지 줄(이 표시 포함)을 지우면 그대로 정답이 된다.
+# 표시가 남아 있는 동안은 "아직 안 채운 것"이므로 절대 제출에 쓰이지 않는다.
+# 설문 족보(seminar_survey)와 퀴즈 족보(doctorville)가 같은 문구를 쓴다 — 사람이
+# 두 파일을 같은 방식으로 편집하므로 문구가 갈라지면 안 된다.
+ANSWER_PLACEHOLDER_MARKER = "※ 정답만 남기고 나머지 줄(이 줄 포함)을 지우세요"
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 LOG_DIR = SCRIPT_DIR / "logs"
 DEFAULT_CREDENTIALS = SCRIPT_DIR.parent / "credentials.json"

@@ -7,9 +7,72 @@ from doctorville import (
     normalize_product,
     resolve_product_key,
     _record_answers,
+    _record_missing_placeholders,
     _evict_answers,
     _evict_legacy_answers,
+    coerce_bank_answer,
+    product_has_answer,
+    PLACEHOLDER_MARKER,
 )
+
+
+# --- 미등록 문항 자리표시자 -------------------------------------------------
+
+def test_coerce_bank_answer_rejects_untrimmed_placeholder():
+    """표시줄이 남아 있으면 미등록 — 보기를 찍어서 제출하는 사고를 막는다."""
+    assert coerce_bank_answer([PLACEHOLDER_MARKER, "가", "나"]) is None
+
+
+def test_coerce_bank_answer_rejects_multiple_remaining_options():
+    """표시줄만 지우고 보기를 여러 줄 남겼으면 아직 고른 게 아니다."""
+    assert coerce_bank_answer(["가", "나"]) is None
+
+
+def test_coerce_bank_answer_accepts_single_trimmed_option():
+    assert coerce_bank_answer(["나"]) == "나"
+    assert coerce_bank_answer("  나  ") == "나"
+    assert coerce_bank_answer("") is None
+
+
+def test_product_has_answer_ignores_placeholder_only_product():
+    assert product_has_answer({"Q1": [PLACEHOLDER_MARKER, "가"]}) is False
+    assert product_has_answer({"Q1": [PLACEHOLDER_MARKER, "가"], "Q2": "나"}) is True
+
+
+def test_match_quiz_bank_false_when_only_placeholders():
+    """자리표시자만 있는 제품을 already_done으로 세면 precheck 알림이 사라진다."""
+    from doctorville import match_quiz_bank
+
+    bank = {"펙수클루정": {"Q": [PLACEHOLDER_MARKER, "가", "나"]}}
+    assert match_quiz_bank("펙수클루정40mg", bank, {}) is False
+    bank["펙수클루정"]["Q"] = ["나"]
+    assert match_quiz_bank("펙수클루정40mg", bank, {}) is True
+
+
+def test_record_missing_placeholders_seeds_options(tmp_path, monkeypatch):
+    bank_file = tmp_path / "quiz_answers.json"
+    bank_file.write_text(json.dumps({"프리스타일 리브레": {"Q1": "A1"}}), encoding="utf-8")
+    monkeypatch.setattr("doctorville.QUIZ_ANSWERS_PATH", bank_file)
+
+    added = _record_missing_placeholders(
+        "프리스타일리브레", [{"question": "Q2", "options": ["1. 가", "2. 나"]}]
+    )
+    assert added == 1
+    # 새 중복 제품 키를 만들지 않는다.
+    assert json.loads(bank_file.read_text(encoding="utf-8")) == {
+        "프리스타일 리브레": {"Q1": "A1", "Q2": [PLACEHOLDER_MARKER, "1. 가", "2. 나"]}
+    }
+
+
+def test_record_missing_placeholders_never_overwrites_existing(tmp_path, monkeypatch):
+    """매칭에 실패했더라도 사람이 넣어둔 값을 자리표시자로 덮지 않는다."""
+    bank_file = tmp_path / "quiz_answers.json"
+    bank_file.write_text(json.dumps({"에빅사": {"Q1": "옛정답"}}), encoding="utf-8")
+    monkeypatch.setattr("doctorville.QUIZ_ANSWERS_PATH", bank_file)
+
+    added = _record_missing_placeholders("에빅사", [{"question": "Q1", "options": ["가", "나"]}])
+    assert added == 0
+    assert json.loads(bank_file.read_text(encoding="utf-8")) == {"에빅사": {"Q1": "옛정답"}}
 
 
 # --- 제품명 표기 흔들림 ------------------------------------------------------

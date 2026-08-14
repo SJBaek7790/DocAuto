@@ -155,11 +155,41 @@ def consolidate_products(data: dict) -> dict:
     return out
 
 
+PLACEHOLDER_MARKER = common.ANSWER_PLACEHOLDER_MARKER
+
+
+def coerce_bank_answer(value):
+    """족보 값 → 제출에 쓸 정답 텍스트. 아직 못 고르는 값이면 None.
+
+    미등록 문항은 값 자리에 `[표시줄, 보기…]`가 깔려 있다. 표시줄이 남아 있거나
+    보기가 여러 줄 남아 있으면 사람이 아직 안 고른 것이다 — 찍지 않고 `no_answer`로
+    보낸다. 정답 한 줄만 남기면 그 보기가 곧 정답이다.
+    """
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        items = [str(v).strip() for v in value if str(v).strip()]
+        if len(items) != 1 or items[0] == PLACEHOLDER_MARKER:
+            return None
+        return items[0]
+    return None
+
+
+def product_has_answer(bank_entry) -> bool:
+    """제품 문제은행에 실제로 쓸 수 있는 정답이 하나라도 있는가."""
+    if not isinstance(bank_entry, dict):
+        return False
+    return any(coerce_bank_answer(v) is not None for v in bank_entry.values())
+
+
 def match_quiz_bank(product_name: str, bank: dict, legacy: dict) -> bool:
     norm_p = normalize_text(product_name)
     if not norm_p:
         return False
-    for k in list(bank.keys()) + list(legacy.keys()):
+    # 미기입 자리표시자만 들어 있는 제품 키는 "정답 있음"이 아니다. 이걸 세면
+    # precheck가 익일 퀴즈를 already_done으로 덮어 알림이 안 간다.
+    usable_bank = [k for k, v in bank.items() if product_has_answer(v)]
+    for k in usable_bank + list(legacy.keys()):
         norm_k = normalize_text(k)
         if norm_k and norm_k in norm_p:
             return True
@@ -235,6 +265,40 @@ def _record_answers(product: str, pairs: list[tuple[str, str]]) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
     os.replace(tmp_file, QUIZ_ANSWERS_PATH)
+
+
+def _record_missing_placeholders(product: str, missing: list[dict]) -> int:
+    """미등록 문항을 보기와 함께 문제은행에 깔아둔다. 추가된 문항 수 반환.
+
+    이미 값이 있는 문항은 건드리지 않는다 — 자리표시자로 덮으면 사람이 넣어둔
+    정답이 날아간다. 매칭에 실패한 기존 정답도 그대로 두고 `_evict_answers`에 맡긴다.
+    """
+    seeds = [
+        (m["question"], [str(o) for o in m.get("options") or []])
+        for m in missing
+        if m.get("question") and m.get("options")
+    ]
+    if not seeds:
+        return 0
+
+    data = consolidate_products(load_quiz_answers())
+    key = resolve_product_key(data, product)
+    prod_dict = data.setdefault(key, {})
+    added = 0
+    for q_text, options in seeds:
+        if q_text in prod_dict:
+            continue
+        prod_dict[q_text] = [PLACEHOLDER_MARKER, *options]
+        added += 1
+    if not added:
+        return 0
+
+    tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp_file, QUIZ_ANSWERS_PATH)
+    return added
 
 
 def _evict_answers(product: str, q_texts: list[str]) -> None:
@@ -844,7 +908,7 @@ def task_quiz(page, creds: dict) -> dict:
 
     for i in range(qcount):
         q_text = q_texts[i]
-        answer_text = product_bank.get(q_text)
+        answer_text = coerce_bank_answer(product_bank.get(q_text))
         matched_val = None
         matched_label = None
         if answer_text is not None:
@@ -889,8 +953,11 @@ def task_quiz(page, creds: dict) -> dict:
     if missing or not source:
         result["status"] = "no_answer"
         result["questions"] = missing
+        added = _record_missing_placeholders(product, missing)
+        result["bank_seeded"] = added
         result["message"] = (
-            f"'{product}' 퀴즈: {len(missing)}개 문항 정답 매칭 실패 — quiz_answers.json에 문항/보기 텍스트 그대로 추가 필요."
+            f"'{product}' 퀴즈: {len(missing)}개 문항 정답 매칭 실패 — "
+            f"quiz_answers.json에 {added}개 문항을 보기와 함께 깔아뒀다. 정답만 남기고 지우면 된다."
         )
         close_btn = quiz_layer.locator(".btn_cancel, .btn_close").first
         if close_btn.is_visible():

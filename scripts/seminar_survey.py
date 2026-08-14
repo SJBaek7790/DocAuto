@@ -154,10 +154,8 @@ def build_canonical_index(bank: dict) -> dict:
     return index
 
 
-# 미등록 문항을 족보에 넣을 때, 값 자리에 보기 전부를 이 표시와 함께 깔아둔다.
-# 사람이 정답만 남기고 나머지 줄(이 표시 포함)을 지우면 그대로 정답이 된다.
-# 표시가 남아 있는 동안은 "아직 안 채운 것"이므로 절대 제출에 쓰이지 않는다.
-PLACEHOLDER_MARKER = "※ 정답만 남기고 나머지 줄(이 줄 포함)을 지우세요"
+# 퀴즈 족보(doctorville)와 같은 문구를 쓴다. 정의는 common에 있다.
+PLACEHOLDER_MARKER = common.ANSWER_PLACEHOLDER_MARKER
 
 
 def _coerce_answer(value):
