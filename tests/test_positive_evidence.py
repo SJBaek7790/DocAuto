@@ -84,29 +84,60 @@ def test_doctorville_seminar_apply_no_target():
     assert res["message"] == "신청 가능한 세미나 없음"
 
 
-def test_doctorville_attend_already_done_by_today_cell():
-    """진입만으로 출석 처리된 상태 — 달력의 오늘 셀이 유일한 날짜 확정 증거."""
+def _today_cell():
+    today = datetime.now(common.KST).strftime("%Y-%m-%d")
+    return f'td[data-date="{today}"] div.point.complete'
+
+
+def _attend_page(marker_visible_on_load):
+    """오늘 셀 표식 유무를 진입 횟수별로 지정하는 mock page.
+
+    `marker_visible_on_load[i]`가 i번째 진입에서 표식이 붙는지.
+    """
     mock_page = MagicMock()
     mock_page.url = "https://www.doctorville.co.kr/event/attend"
-    today = datetime.now(common.KST).strftime("%Y-%m-%d")
+    cell = _today_cell()
+    state = {"load": 0}
 
-    def locator_side_effect(selector):
-        m = MagicMock()
-        m.count.return_value = 1 if f'td[data-date="{today}"]' in selector else 0
-        return m
+    def wait_for_selector(selector, **kw):
+        if selector == cell:
+            idx = min(state["load"], len(marker_visible_on_load) - 1)
+            if not marker_visible_on_load[idx]:
+                state["load"] += 1
+                raise PlaywrightTimeoutError("Timeout")
+            state["load"] += 1
+            return MagicMock()
+        return MagicMock()
 
-    mock_page.locator.side_effect = locator_side_effect
+    mock_page.wait_for_selector.side_effect = wait_for_selector
+    return mock_page
+
+
+def test_doctorville_attend_already_done_by_today_cell():
+    """진입만으로 출석 처리된 상태 — 달력의 오늘 셀이 유일한 날짜 확정 증거."""
+    mock_page = _attend_page([True])
 
     with patch("doctorville.ensure_logged_in", return_value=True):
         res = task_attend(mock_page, {})
     assert res["status"] == "already_done"
-    assert res["verified_by"] == f'td[data-date="{today}"] div.point.complete'
+    assert res["verified_by"] == _today_cell()
+
+
+def test_doctorville_attend_success_on_revisit():
+    """첫 진입 응답엔 표식이 없어도 재접속에서 확인되면 성공(진입=출석)."""
+    mock_page = _attend_page([False, True])
+
+    with patch("doctorville.ensure_logged_in", return_value=True):
+        res = task_attend(mock_page, {})
+    assert res["status"] == "success"
+    assert res["verified_by"] == _today_cell()
+    # 버튼 클릭 분기로 새지 않는다
+    assert not any("출석하기" in str(c) for c in mock_page.locator.call_args_list)
 
 
 def test_doctorville_attend_unverified_when_no_marker_and_no_button():
     """오늘 셀 표식도 없고 출석 버튼도 보이지 않으면 증거 없음 → unverified."""
-    mock_page = MagicMock()
-    mock_page.url = "https://www.doctorville.co.kr/event/attend"
+    mock_page = _attend_page([False])
     mock_locator = MagicMock()
     mock_locator.count.return_value = 0
     mock_locator.first.wait_for.side_effect = PlaywrightTimeoutError("Timeout")

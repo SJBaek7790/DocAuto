@@ -58,6 +58,8 @@ SEMINAR_MAIN_URL    = f"{DOCTORVILLE_BASE}/seminar/main"
 SEMINAR_DETAIL_URL  = f"{DOCTORVILLE_BASE}/seminar/seminarDetail"
 
 DEFAULT_TIMEOUT_MS  = 30000
+# 달력(오늘 셀) 마운트 대기. 없으면 "미출석"이 아니라 "아직 안 그려짐"일 뿐이다.
+ATTEND_MARKER_TIMEOUT_MS = 8000
 SCRIPT_DIR          = Path(__file__).resolve().parent
 QUIZ_ANSWERS_PATH   = SCRIPT_DIR.parent / "quiz_answers.json"
 LEGACY_ANSWERS_PATH = SCRIPT_DIR.parent / "quiz_answers_legacy.json"
@@ -559,6 +561,21 @@ def _attend_points(page, today_cell: str) -> int:
         return 100
 
 
+def _attend_marked(page, today_cell: str, timeout_ms: int = ATTEND_MARKER_TIMEOUT_MS) -> bool:
+    """달력이 렌더된 뒤에 오늘 셀의 완료 표식을 확인한다.
+
+    달력은 진입 직후엔 아직 붙어 있지 않다. 마운트 전에 `count()`를 읽으면 출석이
+    처리됐는데도 0이 나와, 클릭 분기로 새어 "완료 확인 실패"로 끝난다
+    (키메디에서 이미 같은 함정에 4번 빠졌다).
+    """
+    try:
+        page.wait_for_selector("td[data-date]", state="attached", timeout=timeout_ms)
+        page.wait_for_selector(today_cell, state="attached", timeout=timeout_ms)
+        return True
+    except PlaywrightTimeoutError:
+        return False
+
+
 def task_attend(page, creds: dict) -> dict:
     result = {"status": "failed", "points": 0}
 
@@ -576,10 +593,20 @@ def task_attend(page, creds: dict) -> dict:
     # `td[data-date="YYYY-MM-DD"] > div.point.complete` (미출석/미래 날짜는 `.complete` 없음).
     # 출석은 페이지 진입만으로 처리되므로 이 확인이 먼저다 (R2 정찰, 2026-08-10).
     today_cell = f'td[data-date="{datetime.now(common.KST):%Y-%m-%d}"] div.point.complete'
-    if page.locator(today_cell).count() > 0:
+    if _attend_marked(page, today_cell):
         result["status"] = "already_done"
         result["verified_by"] = today_cell
         result["message"] = "출석 완료 (페이지 진입 시 자동 처리)."
+        return result
+
+    # 진입으로 적립됐지만 그 응답의 달력엔 아직 반영되지 않는 경우가 있다.
+    # 버튼을 누르기 전에 재접속해서 한 번 더 본다(진입=출석이므로 이게 정상 경로).
+    common.goto_with_retry(page, ATTEND_URL, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
+    if _attend_marked(page, today_cell):
+        result["status"] = "success"
+        result["verified_by"] = today_cell
+        result["points"] = _attend_points(page, today_cell)
+        result["message"] = f"출석 완료, {result['points']}P 적립 (재접속 확인)."
         return result
 
     # 미출석 — "N월 N일 출석하기" 버튼이 보인다.
@@ -630,8 +657,8 @@ def task_attend(page, creds: dict) -> dict:
         result["message"] = f"출석 완료, {result['points']}P 적립."
     except PlaywrightTimeoutError:
         # 팝업 없이 바로 완료 처리되는 경우도 있음 — 달력 표식으로 재확인
-        page.reload()
-        if page.locator(today_cell).count() > 0:
+        page.reload(wait_until="domcontentloaded")
+        if _attend_marked(page, today_cell):
             result["status"] = "success"
             result["verified_by"] = today_cell
             result["points"] = _attend_points(page, today_cell)

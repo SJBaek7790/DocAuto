@@ -273,6 +273,7 @@ GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-
 | 퀴즈 already_done 미인식 | 제출 완료 시 "축하드립니다" 뷰라 `.btn_answer` 없음 | `:text('축하드립니다')` → `already_done` |
 | pId 조회 실패 | `/product/medicineList` 검색은 의약품 전용 — 모비케어 등 의료기기 미등록 | 캘린더 `td.today .pIdCls`에서 직접 추출(medicineList는 폴백만) |
 | 출석 매일 `unverified` → daily 백스톱 런이 매일 빨간불 (2026-08-05~10) | 출석은 **페이지 진입만으로 처리**되는데, 두 버튼이 DOM에 공존하며 `display`로만 토글된다. `button:has-text("출석하기")`는 매칭되지만 hidden이라 `wait_for(state="visible")`가 타임아웃 → "출석 버튼 없음(날짜 미확인)" | 버튼 대기 **이전에** `td[data-date="{today}"] div.point.complete` 확인 → `already_done` + `verified_by`. 클릭 후 폴백도 같은 표식으로 교체(기존 `#attend_btn, .btn_attend`는 실존하지 않는 셀렉터라 0개 매칭 시 예외). 포인트는 셀 `img[alt]`에서 읽음(100/보너스 500) |
+| 출석 `failed` — "출석 버튼 클릭 후 완료 확인 실패" (2026-08-14) | 오늘 셀 확인이 `locator().count()` **즉시 읽기**였다. 달력은 `domcontentloaded` 시점에 아직 안 붙어 있어, 출석이 처리됐는데도 0 → 클릭 분기로 새고 → `reload()` 후에도 또 즉시 `count()` → 실패. 키메디 `already_done` 오판과 **같은 함정**(마운트 전 count) | `_attend_marked()`로 `wait_for_selector("td[data-date]")` → 오늘 셀 순서로 대기(8초). 버튼을 누르기 전에 **재접속 1회**를 넣어 진입=출석 경로를 정상 경로로 삼음(`success`, `verified_by`=오늘 셀). 클릭 후 폴백도 같은 대기로 교체 |
 
 ### keymedi.py
 - 첫 성공 2026-07-06. 수정 순서: venv 전환 → 로그인 URL 매칭 대신 폼 가시성 → 클릭 후 폼 hidden 대기.
