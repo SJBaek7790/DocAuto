@@ -122,6 +122,23 @@ def test_build_message_actionable_preserves_questions_payload():
     assert "[\n  {\n" in msg  # verifies indent=2 formatted JSON output
 
 
+def test_build_message_all_renders_question_and_option_texts():
+    """all 레벨에서 문항·보기 텍스트가 실제로 찍혀야 한다(키만 찍히던 버그)."""
+    results = {
+        "doctorville": {
+            "quiz": {
+                "status": "no_answer",
+                "product": "우루사",
+                "questions": [{"question": "다음 중 옳은 것은?", "options": ["가나다", "라마바"]}],
+            }
+        }
+    }
+    msg = build_message(results, "all", "2026-08-31")
+    assert "question: 다음 중 옳은 것은?" in msg
+    assert "1. 가나다" in msg
+    assert "2. 라마바" in msg
+
+
 def test_send_telegram_empty_text_returns_true():
     assert send_telegram("") is True
     assert send_telegram(None) is True

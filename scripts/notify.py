@@ -120,6 +120,12 @@ def _format_all_summary(results: dict, date_str: str) -> str:
                 for idx, item in enumerate(v):
                     if isinstance(item, dict):
                         _render_dict({f"[{idx}]": item}, indent + 1)
+                    else:
+                        # 보기 목록처럼 값이 문자열인 리스트. 이걸 빠뜨리면
+                        # "options:"만 찍히고 정작 봐야 할 보기가 안 나온다.
+                        lines.append(f"{prefix}  {idx + 1}. {shorten(str(item))}")
+            elif v is not None and v != "":
+                lines.append(f"{prefix}{k}: {shorten(str(v))}")
 
     for k, v in results.items():
         if isinstance(v, dict):
