@@ -227,6 +227,7 @@ def test_run_survey_incomplete_bank_questions_payload(tmp_path, monkeypatch):
         {
             "question": "미등록 질문",
             "options": ["1. 보기1", "2. 보기2"],
+            "option_texts": ["보기1", "보기2"],
             "bank": "quiz",
         }
     ]

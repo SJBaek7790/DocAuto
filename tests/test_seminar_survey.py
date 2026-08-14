@@ -103,7 +103,12 @@ def test_resolve_page_reports_missing_with_options():
     plan, missing = resolve_page([q], _banks())
     assert plan == []
     # 보기에는 입력할 번호가 붙고, 채워 넣을 족보 이름이 함께 나온다.
-    assert missing == [{"question": "문항1", "options": ["1. 가", "2. 나"], "bank": "quiz"}]
+    assert missing == [{
+        "question": "문항1",
+        "options": ["1. 가", "2. 나"],
+        "option_texts": ["가", "나"],
+        "bank": "quiz",
+    }]
 
 
 def test_resolve_page_unmatched_stored_value_is_missing():
@@ -332,12 +337,50 @@ def test_add_missing_to_banks_routes_by_bank_key(tmp_path):
     assert format_bank_counts(counts) == "퀴즈 1건, 주관식 1건"
 
 
-def test_add_missing_to_bank_writes_empty_placeholders(tmp_path):
+def test_add_missing_to_bank_writes_options_as_placeholder(tmp_path):
+    """보기가 있으면 값 자리에 [표시, 보기…]를 깔아 손으로 정답만 남기게 한다."""
+    from seminar_survey import PLACEHOLDER_MARKER
+
     bank_path = tmp_path / "survey_answers.json"
     bank_path.write_text(json.dumps({"기존": "값"}), encoding="utf-8")
-    added = add_missing_to_bank(bank_path, [{"question": "새문항", "options": ["가"]}, {"question": "기존", "options": []}])
+    added = add_missing_to_bank(bank_path, [
+        {"question": "새문항", "options": ["1. 가", "2. 나"], "option_texts": ["가", "나"]},
+        {"question": "기존", "options": []},
+    ])
     assert added == 1
-    assert load_bank(bank_path) == {"기존": "값", "새문항": ""}
+    assert load_bank(bank_path) == {
+        "기존": "값",
+        "새문항": [PLACEHOLDER_MARKER, "가", "나"],
+    }
+
+
+def test_add_missing_to_bank_writes_empty_for_text_question(tmp_path):
+    """주관식은 고를 보기가 없으므로 종전대로 빈 문자열."""
+    bank_path = tmp_path / "survey_text.json"
+    added = add_missing_to_bank(bank_path, [{"question": "의견", "options": [], "option_texts": []}])
+    assert added == 1
+    assert load_bank(bank_path) == {"의견": ""}
+
+
+def test_placeholder_value_is_never_submitted():
+    """표시가 남아 있는 동안은 미등록이다(보기를 전부 제출하는 사고 방지)."""
+    from seminar_survey import PLACEHOLDER_MARKER
+
+    bank = {"문항1": [PLACEHOLDER_MARKER, "가", "나"]}
+    assert lookup_answer(bank, "문항1") is None
+
+    q = _quiz_q("문항1", ["가", "나"])
+    plan, missing = resolve_page([q], _banks(quiz=bank))
+    assert plan == []
+    assert [m["question"] for m in missing] == ["문항1"]
+
+
+def test_placeholder_trimmed_to_single_option_becomes_answer():
+    """정답만 남기고 지우면 그 보기가 선택된다."""
+    q = _quiz_q("문항1", ["가", "나"])
+    plan, missing = resolve_page([q], _banks(quiz={"문항1": ["나"]}))
+    assert missing == []
+    assert plan == [{"kind": "choice", "targets": [q["options"][1]]}]
 
 
 def test_pending_seminar_ids_excludes_done():

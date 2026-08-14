@@ -154,11 +154,19 @@ def build_canonical_index(bank: dict) -> dict:
     return index
 
 
+# 미등록 문항을 족보에 넣을 때, 값 자리에 보기 전부를 이 표시와 함께 깔아둔다.
+# 사람이 정답만 남기고 나머지 줄(이 표시 포함)을 지우면 그대로 정답이 된다.
+# 표시가 남아 있는 동안은 "아직 안 채운 것"이므로 절대 제출에 쓰이지 않는다.
+PLACEHOLDER_MARKER = "※ 정답만 남기고 나머지 줄(이 줄 포함)을 지우세요"
+
+
 def _coerce_answer(value):
     if isinstance(value, str):
         return value.strip() or None
     if isinstance(value, list):
         items = [str(v).strip() for v in value if str(v).strip()]
+        if any(i == PLACEHOLDER_MARKER for i in items):
+            return None
         return items or None
     return None
 
@@ -364,6 +372,9 @@ def resolve_page(questions: list[dict], banks: dict) -> tuple[list[dict], list[d
             missing.append({
                 "question": normalize_question(text),
                 "options": [f"{i + 1}. {o}" for i, o in enumerate(options)],
+                # 족보에 깔아둘 보기 원문(번호 없음) — 저장값 형식이 보기 텍스트라
+                # 사람이 한 줄 남기면 그대로 매칭된다.
+                "option_texts": list(options),
                 "bank": bank_name,
             })
 
@@ -465,8 +476,17 @@ def evaluate_survey_cutoff(item: dict, now_dt: datetime = None) -> str:
     return "not_ready"
 
 
+def placeholder_value(option_texts: list[str] | None):
+    """족보에 깔아둘 미기입 값. 보기가 있으면 [표시, 보기…], 없으면 빈 문자열.
+
+    주관식은 고를 보기가 없으므로 종전대로 빈 문자열이다.
+    """
+    options = [normalize(o) for o in (option_texts or []) if normalize(o)]
+    return [PLACEHOLDER_MARKER, *options] if options else ""
+
+
 def add_missing_to_bank(bank_path: str | Path, missing: list[dict]) -> int:
-    """미등록 문항을 빈 값으로 문제은행에 추가한다. 추가된 개수 반환."""
+    """미등록 문항을 미기입 값으로 문제은행에 추가한다. 추가된 개수 반환."""
     bank_path = Path(bank_path)
     bank = load_bank(bank_path)
     canon = {canonical_question(k) for k in bank}
@@ -475,7 +495,7 @@ def add_missing_to_bank(bank_path: str | Path, missing: list[dict]) -> int:
         key = m["question"]
         ck = canonical_question(key)
         if key not in bank and ck not in canon:
-            bank[key] = ""
+            bank[key] = placeholder_value(m.get("option_texts"))
             canon.add(ck)
             added += 1
     if added:
