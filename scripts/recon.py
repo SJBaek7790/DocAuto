@@ -18,21 +18,16 @@ R4: 이달의 퀴즈 캘린더에서 내일 셀에 제품명·pId가 채워지�
 import argparse
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-import common  # noqa: E402
-import doctorville  # noqa: E402
-from playwright.sync_api import sync_playwright  # noqa: E402
-
-KST = timezone(timedelta(hours=9))
-LOG_DIR = Path(__file__).resolve().parent / "logs"
+import common
+import doctorville
+from playwright.sync_api import sync_playwright
 
 
 def dump_recon_data(item_id: str, data: dict, page=None) -> str:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    common.LOG_DIR.mkdir(parents=True, exist_ok=True)
     if page is not None:
         try:
             shot_path = common.save_screenshot(page, f"recon_{item_id}")
@@ -40,14 +35,10 @@ def dump_recon_data(item_id: str, data: dict, page=None) -> str:
                 data["screenshot"] = shot_path
         except Exception:
             pass
-    ts = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
-    path = LOG_DIR / f"recon_{item_id}_{ts}.json"
+    ts = datetime.now(common.KST).strftime("%Y%m%d_%H%M%S")
+    path = common.LOG_DIR / f"recon_{item_id}_{ts}.json"
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
-
-
-def _dump(item: str, data: dict) -> str:
-    return dump_recon_data(item, data)
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +130,7 @@ def recon_r2(page) -> dict:
     data["screenshot"] = common.save_screenshot(page, "recon_R2_entry")
 
     # 진입만으로 출석이 처리된다면, 새로고침 후에도 동일 표식이 남아야 한다.
-    page.reload(wait_until="domcontentloaded")
+    common.reload_with_retry(page, wait_until="domcontentloaded")
     page.wait_for_timeout(3000)
     data["pass2_after_reload"] = page.evaluate(ATTEND_JS, today)
     data["screenshot_reload"] = common.save_screenshot(page, "recon_R2_reload")
@@ -175,11 +166,11 @@ CALENDAR_JS = """
 
 
 def recon_r4(page) -> dict:
-    page.goto(doctorville.PRODUCT_MAIN_URL, wait_until="domcontentloaded")
+    common.goto_with_retry(page, doctorville.PRODUCT_MAIN_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(3000)
 
     data = page.evaluate(CALENDAR_JS)
-    today = datetime.now(KST)
+    today = datetime.now(common.KST)
     tomorrow = today + timedelta(days=1)
     data["today"] = today.strftime("%Y-%m-%d")
     data["tomorrow"] = tomorrow.strftime("%Y-%m-%d")
@@ -251,7 +242,7 @@ LIST_JS = """
 
 def recon_r3(page, seminar_id: str | None) -> dict:
     data = {}
-    page.goto(doctorville.SEMINAR_MAIN_URL, wait_until="domcontentloaded")
+    common.goto_with_retry(page, doctorville.SEMINAR_MAIN_URL, wait_until="domcontentloaded")
     page.wait_for_timeout(2500)
     listing = page.evaluate(LIST_JS)
     data["listing"] = listing
@@ -294,7 +285,7 @@ def main():
         page = context.new_page()
         page.set_default_timeout(doctorville.DEFAULT_TIMEOUT_MS)
         try:
-            page.goto(doctorville.ATTEND_URL, wait_until="load")
+            common.goto_with_retry(page, doctorville.ATTEND_URL, wait_until="load")
             if not doctorville.ensure_logged_in(page, creds):
                 print(json.dumps({"error": "로그인 실패"}, ensure_ascii=False))
                 sys.exit(1)
@@ -309,7 +300,7 @@ def main():
             context.close()
             browser.close()
 
-    out = _dump(args.item, data)
+    out = dump_recon_data(args.item, data)
     print(f"[recon] {args.item} → {out}")
     print(json.dumps(data, ensure_ascii=False, indent=2)[:4000])
 

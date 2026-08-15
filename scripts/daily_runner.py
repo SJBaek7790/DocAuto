@@ -3,9 +3,9 @@
 일일 자동화 통합 실행 스크립트.
 
 실행 순서:
-  1. 키메디 출석
-  2. 닥터빌 (계정별 출석+퀴즈+세미나)
-  3. HMP 캡슐 출석
+  1. 닥터빌 (계정별 출석+퀴즈+세미나)
+  2. 키메디 출석
+  3. HMP (캡슐+룰렛+댓글+글쓰기)
   4. 내일 닥터빌 퀴즈 사전 점검
   5. 세미나 신청 이력(seminar_applied.json)에서 날짜 지난 항목 정리
   6. 결과를 notify 게이트를 거쳐 텔레그램 bot으로 전송
@@ -20,46 +20,83 @@
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
 import common
+import doctorville
 import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PYTHON = sys.executable
 
 
+def _extract_json(text: str) -> dict | None:
+    """텍스트에서 가장 마지막 또는 유효한 JSON 블록을 추출해 파싱한다."""
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 역방향 줄 단위 단일 라인 JSON 탐색
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                pass
+
+    # 멀티라인 JSON 블록({ ... }) 탐색
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        candidate = text[first_brace:last_brace+1]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
 def run_script(script_name: str, extra_args: list[str] = None, timeout: int = 120) -> dict:
     """서브프로세스로 스크립트를 실행하고 stdout JSON을 파싱해 반환한다."""
     script_path = SCRIPT_DIR / script_name
     cmd = [PYTHON, str(script_path)] + (extra_args or [])
+    kwargs = {}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
+            **kwargs,
         )
         stdout = proc.stdout.strip()
-        for line in reversed(stdout.splitlines()):
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    return json.loads(line)
-                except json.JSONDecodeError:
-                    pass
-        try:
-            return json.loads(stdout)
-        except json.JSONDecodeError:
-            return {
-                "status": "failed",
-                "message": f"JSON 파싱 실패. stdout: {stdout[:300]}",
-                "stderr": proc.stderr[:200],
-            }
-    except subprocess.TimeoutExpired:
+        parsed = _extract_json(stdout)
+        if parsed is not None:
+            return parsed
+        return {
+            "status": "failed",
+            "message": f"JSON 파싱 실패. stdout: {stdout[:300]}",
+            "stderr": proc.stderr[:200],
+        }
+    except subprocess.TimeoutExpired as e:
+        if os.name != "nt" and hasattr(e, "pid") and e.pid:
+            try:
+                os.killpg(e.pid, signal.SIGKILL)
+            except Exception:
+                pass
         return {"status": "failed", "message": f"{script_name} 타임아웃 ({timeout}초)."}
     except Exception as e:
         return {"status": "failed", "message": f"실행 예외: {e}"}
@@ -74,13 +111,9 @@ def evaluate_exit_code(results: dict) -> int:
         if isinstance(val, dict):
             if val.get("status") in FAIL_STATUSES:
                 return True
-            for v in val.values():
-                if _is_failed(v):
-                    return True
+            return any(_is_failed(v) for v in val.values())
         elif isinstance(val, list):
-            for item in val:
-                if _is_failed(item):
-                    return True
+            return any(_is_failed(item) for item in val)
         return False
 
     return 1 if _is_failed(results) else 0
@@ -159,7 +192,6 @@ def main():
 
     # 세미나 신청 이력 정리 — 브라우저가 필요 없는 파일 작업이라 서브프로세스로
     # 돌리지 않는다. 30분마다 도는 seminar_block이 아니라 여기서 하루 1회만 한다.
-    import doctorville
     results["seminar_applied_prune"] = doctorville.prune_applied_file()
     print(json.dumps(results["seminar_applied_prune"], ensure_ascii=False))
 

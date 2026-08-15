@@ -59,15 +59,16 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 import common
+from common import KST as kst, parse_dd_date, write_json_atomic
 import doctorville
 import seminar_live
-from seminar_live import parse_dd_date, upgrade_to_v2
+from seminar_live import upgrade_to_v2
 import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -170,15 +171,7 @@ def _coerce_answer(value):
 
 
 def load_bank(path: str | Path) -> dict:
-    path = Path(path)
-    if not path.exists():
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    return common.read_json(path, default={})
 
 
 def lookup_answer(bank: dict, question: str, index: dict = None):
@@ -328,8 +321,6 @@ def apply_promotions(banks: dict, plan: list[dict]) -> dict:
     promotions = [s["promote"] for s in plan if s.get("promote")]
     if not promotions:
         return {}
-
-    from telegram_inbox import write_json_atomic
 
     counts, moved = {}, []
     for name, path in banks.get("paths", {}).items():
@@ -497,7 +488,6 @@ def add_missing_to_bank(bank_path: str | Path, missing: list[dict]) -> int:
             canon.add(ck)
             added += 1
     if added:
-        from telegram_inbox import write_json_atomic
         write_json_atomic(bank_path, dict(sorted(bank.items())))
     return added
 
@@ -569,25 +559,16 @@ def mark_survey_done(state: dict, account: str, seminar_id: int | str, path=None
     mark_survey_status(state, account, seminar_id, "done", path)
 
 
+SURVEY_STATUS_PRIORITY = (
+    "failed", "unverified", "incomplete_bank", "success", "already_done", "not_ready", "closed"
+)
+
+
 def rollup_account_status(statuses: list[str]) -> str:
     """Compute top-level account survey status from individual survey statuses."""
     if not statuses:
         return "no_target"
-    if "failed" in statuses:
-        return "failed"
-    if "unverified" in statuses:
-        return "unverified"
-    if "incomplete_bank" in statuses:
-        return "incomplete_bank"
-    if "success" in statuses:
-        return "success"
-    if "already_done" in statuses:
-        return "already_done"
-    if "not_ready" in statuses:
-        return "not_ready"
-    if "closed" in statuses:
-        return "closed"
-    return statuses[0]
+    return next((s for s in SURVEY_STATUS_PRIORITY if s in statuses), statuses[0])
 
 
 def rollup_verified_by(surveys: list[dict]) -> str:
@@ -1038,8 +1019,7 @@ def main():
     parser.add_argument("--no-telegram", action="store_true")
     args = parser.parse_args()
 
-    kst = timezone(timedelta(hours=9))
-    date_str = datetime.now(kst).strftime("%Y-%m-%d")
+    date_str = datetime.now(common.KST).strftime("%Y-%m-%d")
     creds = common.read_credentials(Path(args.credentials))
     accounts = common.list_accounts(creds, "doctorville") if args.account == "all" else [args.account]
 
@@ -1084,7 +1064,11 @@ def main():
                 ok = notify.send_telegram(msg, credentials_path=args.credentials)
                 print(f"[telegram] {'성공' if ok else '실패'}")
 
-    sys.exit(1 if any(r.get("status") == "failed" for r in results.values()) else 0)
+    failed = any(
+        r.get("status") in {"failed", "unverified", "blocked"}
+        for r in results.values()
+    )
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

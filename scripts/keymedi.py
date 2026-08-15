@@ -91,7 +91,6 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
             if login_result is False:
                 result["message"] = "로그인 실패 — 아이디/비밀번호 또는 셀렉터 확인 필요."
                 result["screenshot"] = common.save_screenshot(page, f"keymedi_{account}")
-                browser.close()
                 return result
             if login_result is True:
                 page.wait_for_load_state("domcontentloaded")
@@ -111,7 +110,6 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
             except PlaywrightTimeoutError:
                 result["message"] = "출석 버튼(출석체크하기/출석완료)이 로드되지 않음 — 페이지 구조 변경 또는 로그인 실패 가능성."
                 result["screenshot"] = common.save_screenshot(page, f"keymedi_{account}")
-                browser.close()
                 return result
 
             # "출석체크하기"를 먼저 확인한다.
@@ -154,11 +152,9 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
                     result["status"] = "already_done"
                     result["message"] = "오늘 이미 출석체크 완료된 상태로 판단(출석체크하기 버튼 미발견)."
                     result["screenshot"] = common.save_screenshot(page, f"keymedi_{account}_already_done")
-                    browser.close()
                     return result
                 result["message"] = "출석체크하기 버튼을 찾을 수 없음 — 페이지 구조 변경 가능성."
                 result["screenshot"] = common.save_screenshot(page, f"keymedi_{account}")
-                browser.close()
                 return result
 
             # "광고보고 출석하기" 팝업 처리 — 새 탭이 뜰 수 있으므로 대비

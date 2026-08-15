@@ -213,7 +213,11 @@ from unittest.mock import MagicMock, patch
 import sys
 import doctorville
 
-def test_task_quiz_no_answer_payload(monkeypatch):
+def test_task_quiz_no_answer_payload(monkeypatch, tmp_path):
+    bank_file = tmp_path / "quiz_answers.json"
+    bank_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("doctorville.QUIZ_ANSWERS_PATH", bank_file)
+
     mock_page = MagicMock()
 
     monkeypatch.setattr("doctorville._get_today_quiz_product", lambda p: ("테스트제품", "123", "999"))

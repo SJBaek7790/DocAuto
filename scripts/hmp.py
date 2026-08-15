@@ -48,6 +48,7 @@ end-to-end 테스트하지 못했다 (샌드박스가 hmp.co.kr에 접근 불가
 """
 
 import argparse
+from datetime import datetime
 import json
 import re
 import sys
@@ -56,6 +57,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 import common
+import notify
 
 ATTENDANCE_URL = "https://www.hmp.co.kr/event/attendanceRouletteMain.hm"
 COMM_HOME_URL = "https://www.hmp.co.kr/new/knowcomm/knowCommHome.hm"
@@ -295,8 +297,8 @@ def _run_comment(page, account: str) -> dict:
         return last
 
     result["status"] = "already_done"
-    result["board_seq"] = skipped[0]
-    result["message"] = f"후보 {len(skipped)}개 게시물에 이미 모두 댓글 작성됨 (게시물 {', '.join(skipped)})."
+    result["board_seq"] = skipped[0] if skipped else ""
+    result["message"] = f"후보 {len(skipped)}개 게시물에 이미 모두 댓글 작성됨 (게시물 {', '.join(skipped)})." if skipped else "댓글 작성 가능한 후보 게시물 없음"
     return result
 
 
@@ -394,15 +396,19 @@ def _comment_on_board(page, account: str, board_seq: str) -> dict:
             dialog.accept()
 
         page.on("dialog", on_dialog)
+        try:
+            # 7. 등록하기 클릭 → saveCmt() → confirm → AJAX → alert
+            # 텍스트를 채운 폼(main_form)과 동일한 폼의 버튼을 눌러야 한다 — 별도로
+            # form.cmtForm 전체에서 다시 찾으면 다른 폼(기존 댓글 폼)의 버튼을 누를 위험이 있다.
+            main_form.locator('button[onclick*="saveCmt"]').first.click()
 
-        # 7. 등록하기 클릭 → saveCmt() → confirm → AJAX → alert
-        # 텍스트를 채운 폼(main_form)과 동일한 폼의 버튼을 눌러야 한다 — 별도로
-        # form.cmtForm 전체에서 다시 찾으면 다른 폼(기존 댓글 폼)의 버튼을 누를 위험이 있다.
-        main_form.locator('button[onclick*="saveCmt"]').first.click()
-
-        # 8. confirm(즉시) + AJAX + alert(수초 내) 대기
-        page.wait_for_timeout(8000)
-        page.remove_listener("dialog", on_dialog)
+            # 8. confirm(즉시) + AJAX + alert(수초 내) 대기
+            page.wait_for_timeout(8000)
+        finally:
+            try:
+                page.remove_listener("dialog", on_dialog)
+            except Exception:
+                pass
 
         # 9. 결과 판정
         if any("저장 완료" in d for d in dialogs_seen):
@@ -442,9 +448,7 @@ def _comment_on_board(page, account: str, board_seq: str) -> dict:
 
 def kst_today_dot() -> str:
     """오늘(KST)을 HMP 목록 표기와 같은 YYYY.MM.DD 형식으로 반환."""
-    from datetime import datetime, timezone, timedelta
-
-    return datetime.now(timezone(timedelta(hours=9))).strftime("%Y.%m.%d")
+    return datetime.now(common.KST).strftime("%Y.%m.%d")
 
 
 def parse_post_dates(cell_texts: list[str]) -> list[str]:
@@ -532,11 +536,8 @@ def _run_post(page, account: str) -> dict:
     텍스트("여행/취미")를 우선 클릭하고, 못 찾으면 force 클릭 폴백 + 선택 여부를
     is_checked()로 검증한다.
     """
-    from datetime import datetime, timezone, timedelta
-
     DAYS_KO = ["월", "화", "수", "목", "금", "토", "일"]
-    kst = timezone(timedelta(hours=9))
-    day = DAYS_KO[datetime.now(kst).weekday()]
+    day = DAYS_KO[datetime.now(common.KST).weekday()]
     title = "오늘도 화이팅"
     content_html = f"<p>{day}요일이네요. 다들 화이팅하세요.</p>"
     content_text = f"{day}요일이네요. 다들 화이팅하세요."
@@ -627,13 +628,17 @@ def _run_post(page, account: str) -> dict:
             dialog.accept()
 
         page.on("dialog", on_dialog)
+        try:
+            # 8. 등록하기 클릭 → saveBoard() → confirm → AJAX → alert
+            page.locator('#writePopupDiv .botSubmit button[onclick*="saveBoard"]').click()
 
-        # 8. 등록하기 클릭 → saveBoard() → confirm → AJAX → alert
-        page.locator('#writePopupDiv .botSubmit button[onclick*="saveBoard"]').click()
-
-        # 9. confirm(즉시) + AJAX + alert 대기
-        page.wait_for_timeout(8000)
-        page.remove_listener("dialog", on_dialog)
+            # 9. confirm(즉시) + AJAX + alert 대기
+            page.wait_for_timeout(8000)
+        finally:
+            try:
+                page.remove_listener("dialog", on_dialog)
+            except Exception:
+                pass
 
         # 10. 결과 판정
         if any("작성 완료" in d for d in dialogs_seen):
@@ -687,7 +692,6 @@ def run(account: str, credentials_path: Path, headless: bool) -> dict:
             if login_result is False:
                 result["message"] = "로그인 실패 — 아이디/비밀번호 또는 셀렉터 확인 필요."
                 result["screenshot"] = common.save_screenshot(page, f"hmp_{account}")
-                browser.close()
                 return result
             if login_result is True:
                 page.wait_for_load_state("domcontentloaded")
@@ -808,7 +812,8 @@ def main():
 
     result = run(args.account, Path(args.credentials), headless=not args.headed)
     print(json.dumps(result, ensure_ascii=False))
-    sys.exit(0 if result["status"] in ("success", "already_done") else 1)
+    failed = notify.severity_of(result) == "alert" or result.get("status") not in ("success", "already_done")
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

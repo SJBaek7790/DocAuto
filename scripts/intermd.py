@@ -107,15 +107,10 @@ def detect_block(page) -> str:
     return ""
 
 
-def load_answer(path: Path) -> str:
+def load_answer(path: Path | str) -> str:
     """intermd_answer.json에서 answer 문자열을 읽는다. 없으면 빈 문자열."""
-    if not path.exists():
-        return ""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return (json.load(f) or {}).get("answer", "") or ""
-    except Exception:
-        return ""
+    data = common.read_json(path, default={})
+    return data.get("answer", "") if isinstance(data, dict) else ""
 
 
 def load_credentials(path: Path, account: str) -> dict:
@@ -268,10 +263,12 @@ def run(account: str, credentials_path: Path, answer_path: Path, headless: bool 
             picked = choices[idx]
             if incorrect.count() > 0 and incorrect.first.is_visible():
                 result["status"] = "success"
+                result["verified_by"] = "[data-cont='state4'] (오답 확인)"
                 result["correct"] = False
                 result["message"] = f"제출 완료(오답): '{picked}'. 저장된 정답을 갱신해주세요."
             elif correct.count() > 0 and correct.first.is_visible():
                 result["status"] = "success"
+                result["verified_by"] = "[data-cont='state2/state3'] (정답 확인)"
                 result["correct"] = True
                 result["message"] = f"제출 완료(정답): '{picked}'."
             else:

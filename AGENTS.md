@@ -54,7 +54,7 @@
 
 | 파일 | 역할 |
 |---|---|
-| `scripts/common.py` | `read_credentials` / `list_accounts` / `account_label` / `is_recon_enabled` / `save_screenshot` / `goto_with_retry` |
+| `scripts/common.py` | `read_credentials` / `list_accounts` / `account_label` / `is_recon_enabled` / `save_screenshot` / `goto_with_retry` / `reload_with_retry` |
 | `scripts/notify.py` | 중앙 알림 게이트 (severity 판정, messaging, Telegram 전송) |
 | `scripts/recon.py` | 정찰 스크립트 (CLI R3/R4, RECON=1 환경변수 R1/R2) |
 | `scripts/daily_runner.py` | daily 워크플로우 오케스트레이터 + 알림 필터링 |

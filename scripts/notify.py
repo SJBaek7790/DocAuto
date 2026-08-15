@@ -78,14 +78,23 @@ def should_send(results: dict, level: str) -> bool:
     return SEVERITY_ORDER.get(sev, 0) >= SEVERITY_ORDER["action"]
 
 
+STATUS_EMOJIS = {
+    "success": "✅",
+    "already_done": "☑️",
+    "skipped": "⏭️",
+    "no_answer": "❓",
+    "incomplete_bank": "❓",
+    "failed": "❌",
+    "unverified": "⚠️",
+    "blocked": "🚫",
+    "not_ready": "⏳",
+    "closed": "🔒",
+    "no_target": "⏭️",
+}
+
+
 def format_status_emoji(status: str) -> str:
-    return {
-        "success": "✅",
-        "already_done": "☑️",
-        "skipped": "⏭️",
-        "no_answer": "❓",
-        "failed": "❌",
-    }.get(status, "❓")
+    return STATUS_EMOJIS.get(status, "❓")
 
 
 def shorten(text: str, limit: int = 200) -> str:
@@ -96,53 +105,56 @@ def shorten(text: str, limit: int = 200) -> str:
     return first_line
 
 
+IGNORED_RENDER_KEYS = {
+    "status", "points", "message", "verified_by", "product", "quiz_id",
+    "missing", "site", "account", "screenshot", "error", "count",
+    "skipped_known", "applied", "remaining", "pruned", "accounts",
+}
+
+
 def _format_all_summary(results: dict, date_str: str) -> str:
     lines = [f"📋 *일일 자동화 결과* ({date_str})", ""]
 
     def _render_dict(d: dict, indent: int = 0):
         prefix = "  " * indent
         for k, v in d.items():
-            if k in ("status", "points", "message", "verified_by", "product", "quiz_id"):
+            if k in IGNORED_RENDER_KEYS or k == "seminar_applied_prune":
                 continue
             if isinstance(v, dict):
                 if "status" in v:
                     st = v["status"]
+                    emoji = format_status_emoji(st)
                     pts = f" +{v['points']}P" if v.get("points") else ""
                     prod = f" — {v['product']}" if v.get("product") else ""
-                    lines.append(f"{prefix}{k}: {st}{prod}{pts}")
+                    lines.append(f"{prefix}{k}: {emoji} {st}{prod}{pts}")
                     if v.get("message") and st not in ("success", "already_done"):
                         lines.append(f"{prefix}  └ {shorten(v['message'])}")
                 else:
                     lines.append(f"{prefix}{k}:")
                 _render_dict(v, indent + 1)
             elif isinstance(v, list):
+                if k == "surveys":
+                    for item in v:
+                        if isinstance(item, dict):
+                            sid = item.get("seminarId", "")
+                            st = item.get("status", "unknown")
+                            semoji = format_status_emoji(st)
+                            smsg = item.get("message", "")
+                            title = f" — {item['title']}" if item.get("title") else ""
+                            lines.append(f"{prefix}세미나 {sid}{title}: {semoji} {st}")
+                            if smsg and st not in ("success", "already_done"):
+                                lines.append(f"{prefix}  └ {shorten(smsg)}")
+                    continue
                 lines.append(f"{prefix}{k}:")
                 for idx, item in enumerate(v):
                     if isinstance(item, dict):
                         _render_dict({f"[{idx}]": item}, indent + 1)
                     else:
-                        # 보기 목록처럼 값이 문자열인 리스트. 이걸 빠뜨리면
-                        # "options:"만 찍히고 정작 봐야 할 보기가 안 나온다.
                         lines.append(f"{prefix}  {idx + 1}. {shorten(str(item))}")
             elif v is not None and v != "":
                 lines.append(f"{prefix}{k}: {shorten(str(v))}")
 
-    for k, v in results.items():
-        if isinstance(v, dict):
-            if "status" in v:
-                st = v["status"]
-                pts = f" +{v['points']}P" if v.get("points") else ""
-                prod = f" — {v['product']}" if v.get("product") else ""
-                lines.append(f"{k}: {st}{prod}{pts}")
-                if v.get("message") and st not in ("success", "already_done"):
-                    lines.append(f"  └ {shorten(v['message'])}")
-                _render_dict(v, 1)
-            else:
-                lines.append(f"{k}:")
-                _render_dict(v, 1)
-        else:
-            lines.append(f"{k}: {v}")
-
+    _render_dict(results, indent=0)
     return "\n".join(lines)
 
 
@@ -160,22 +172,24 @@ def _format_actionable_summary(results: dict, date_str: str) -> str:
                     status = data["status"]
                     msg = shorten(data.get("message", ""))
                     prod = f" — {data['product']}" if data.get("product") else ""
-                    header_line = f"{prefix}: {status}{prod}"
+                    emoji = format_status_emoji(status)
+                    header_line = f"{prefix}: {emoji} {status}{prod}"
                     if msg:
                         header_line += f" ({msg})"
                     lines.append(header_line.strip())
 
                     if status == "no_answer" and data.get("product"):
-                        lines.append(f"  → quiz_answers.json에 {data['product']} 정답 추가")
+                        lines.append(f"  → quiz_answers.json에 {data['product']} 정답 추가 (또는 텔레그램 답장: {data['product']} [번호])")
                     if status == "incomplete_bank":
                         lines.append("  → survey_quiz_answers.json / survey_text_answers.json 빈 값 추가")
+
                     if "questions" in data:
                         lines.append(json.dumps(data["questions"], ensure_ascii=False, indent=2))
                     if "options" in data:
                         lines.append(json.dumps(data["options"], ensure_ascii=False, indent=2))
 
             for k, v in data.items():
-                if k in ("status", "message", "product", "verified_by", "points", "questions", "options"):
+                if k in IGNORED_RENDER_KEYS or k in ("questions", "options"):
                     continue
                 if isinstance(v, (dict, list)):
                     sub_prefix = f"{prefix} > {k}" if prefix else k

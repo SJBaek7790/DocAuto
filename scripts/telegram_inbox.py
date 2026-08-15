@@ -10,21 +10,37 @@ import json
 import os
 import re
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
+
+import common
+from common import DEFAULT_CREDENTIALS, KST, write_json_atomic
+import notify
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_DIR = SCRIPT_DIR.parent
-DEFAULT_CREDENTIALS = REPO_DIR / "credentials.json"
 DEFAULT_LEGACY_FILE = REPO_DIR / "quiz_answers_legacy.json"
 DEFAULT_INTERMD_FILE = REPO_DIR / "intermd_answer.json"
 
 # `인터엠디:프로미나드` / `인터엠디 프로미나드` — 뒤쪽 전체가 정답 보기 텍스트다.
 INTERMD_PREFIX_RE = re.compile(r"^인터엠디(?:\s*[:：]\s*|\s+)(.+)$")
+INBOX_LINE_RE = re.compile(r"^(.+?)(?:\s*[:：]\s*|\s+)([0-9oOxX]{1,10})$")
+
+HELP_COMMANDS = {"/start", "/help", "도움말", "help", "?"}
+HELP_TEXT = """📖 DocAuto 정답 등록 가이드
+
+1. 닥터빌 퀴즈:
+   [제품명] [보기번호/시퀀스]
+   예: 우루사 121 (또는 우루사: 1)
+
+2. 인터엠디 퀴즈 (수동 전용):
+   인터엠디 [정답텍스트]
+   예: 인터엠디 프로미나드
+
+💡 등록된 닥터빌 정답은 매일 00:15 KST 자정 실행 시 자동 반영됩니다."""
 
 
 def parse_intermd_line(line: str) -> str | None:
@@ -44,11 +60,11 @@ def parse_inbox_line(line: str) -> tuple[str, str] | None:
     line = line.strip()
     if not line:
         return None
-    parts = line.rsplit(None, 1)
-    if len(parts) != 2:
+    m = INBOX_LINE_RE.match(line)
+    if not m:
         return None
-    product, seq = parts[0].strip(), parts[1].strip()
-    if not product or not re.match(r'^[0-9oOxX]{1,10}$', seq):
+    product, seq = m.group(1).strip(), m.group(2).strip()
+    if not product:
         return None
     return product, seq.lower()
 
@@ -75,74 +91,53 @@ class TelegramBot:
         if params:
             url += "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data.get("result", [])
+        try:
+            with urllib.request.urlopen(req, timeout=timeout + 5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("result", [])
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="ignore")
+            print(f"[telegram_inbox] getUpdates 실패 HTTP {e.code}: {err_body}", file=sys.stderr)
+            return []
+        except Exception as e:
+            print(f"[telegram_inbox] getUpdates 실패: {e}", file=sys.stderr)
+            return []
 
-    def send_message(self, chat_id: str | int, text: str, reply_to_message_id: int | None = None) -> dict:
+    def send_message(self, chat_id: str | int, text: str, reply_to_message_id: int | None = None) -> bool:
         url = f"{self.base_url}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-        }
-        if reply_to_message_id is not None:
+        payload = {"chat_id": chat_id, "text": text}
+        if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
-
-        req_data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=req_data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-
-
-def write_json_atomic(path: str | Path, data) -> None:
-    """같은 디렉터리의 임시 파일에 쓴 뒤 os.replace로 원자적으로 교체한다."""
-    path = Path(path)
-    parent_dir = path.parent
-    parent_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp_file = tempfile.mkstemp(dir=parent_dir, prefix=path.stem + "_", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp_file, path)
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("ok", False)
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="ignore")
+            print(f"[telegram_inbox] sendMessage 실패 HTTP {e.code}: {err_body}", file=sys.stderr)
+            return False
+        except Exception as e:
+            print(f"[telegram_inbox] sendMessage 실패: {e}", file=sys.stderr)
+            return False
 
 
 def process_updates(
     updates: list[dict],
-    allowed_chat_id: int | str,
-    legacy_path: str | Path,
+    allowed_chat_id: str | int,
+    legacy_path: str | Path = DEFAULT_LEGACY_FILE,
     bot=None,
     quiz_answers_path: str | Path | None = None,
     intermd_path: str | Path | None = None,
 ) -> int:
     legacy_path = Path(legacy_path)
-    legacy_dict = {}
-    if legacy_path.exists():
-        try:
-            with open(legacy_path, "r", encoding="utf-8") as f:
-                legacy_dict = json.load(f)
-        except Exception:
-            legacy_dict = {}
-
-    if quiz_answers_path is None:
-        quiz_answers_path = legacy_path.parent / "quiz_answers.json"
-    else:
-        quiz_answers_path = Path(quiz_answers_path)
-
+    quiz_answers_path = Path(quiz_answers_path) if quiz_answers_path else legacy_path.parent / "quiz_answers.json"
     intermd_path = Path(intermd_path) if intermd_path else legacy_path.parent / "intermd_answer.json"
-    intermd_answer = None
 
-    quiz_dict = {}
-    if quiz_answers_path.exists():
-        try:
-            with open(quiz_answers_path, "r", encoding="utf-8") as f:
-                quiz_dict = json.load(f)
-        except Exception:
-            quiz_dict = {}
+    legacy_dict = common.read_json(legacy_path, default={})
+    quiz_dict = common.read_json(quiz_answers_path, default={})
+    intermd_answer = None
 
     max_update_id = 0
     modified = False
@@ -158,7 +153,6 @@ def process_updates(
 
         chat_id = message.get("chat", {}).get("id")
         if chat_id is None or str(chat_id) != str(allowed_chat_id):
-            # Telegram security constraint: REJECT updates where chat.id does not match TELEGRAM_CHAT_ID
             continue
 
         text = message.get("text", "")
@@ -174,6 +168,15 @@ def process_updates(
             line = line.strip()
             if not line:
                 continue
+            clean_cmd = re.sub(r"@\w+", "", line.lower()).strip()
+            if clean_cmd in HELP_COMMANDS:
+                if bot:
+                    bot.send_message(
+                        chat_id=allowed_chat_id,
+                        text=HELP_TEXT,
+                        reply_to_message_id=message_id,
+                    )
+                continue
             intermd = parse_intermd_line(line)
             if intermd:
                 intermd_answer = intermd
@@ -182,11 +185,17 @@ def process_updates(
             parsed = parse_inbox_line(line)
             if parsed:
                 product, seq = parsed
-                is_known = (product in quiz_dict or product in legacy_dict)
-                legacy_dict[product] = seq
+                p_norm = re.sub(r"[^0-9a-z가-힣]", "", product.lower())
+                matched_key = None
+                for k in list(quiz_dict.keys()) + list(legacy_dict.keys()):
+                    if re.sub(r"[^0-9a-z가-힣]", "", k.lower()) == p_norm:
+                        matched_key = k
+                        break
+                target_key = matched_key or product
+                legacy_dict[target_key] = seq
                 modified = True
-                if is_known:
-                    saved_items.append((product, seq))
+                if matched_key:
+                    saved_items.append((target_key, seq))
                 else:
                     warning_items.append(f"⚠️ {product} → {seq} 저장 ({product}은(는) quiz_answers.json에 없는 제품명 — 오타 확인)")
             else:
@@ -220,28 +229,11 @@ def process_updates(
             intermd_path,
             {
                 "answer": intermd_answer,
-                "updated_at": datetime.now(timezone(timedelta(hours=9))).isoformat(timespec="seconds"),
+                "updated_at": datetime.now(KST).isoformat(timespec="seconds"),
             },
         )
 
     return (max_update_id + 1) if max_update_id > 0 else 0
-
-
-def get_telegram_credentials(credentials_path: Path) -> tuple[str, str]:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-    if token and chat_id:
-        return token, chat_id
-    if credentials_path.exists():
-        try:
-            with open(credentials_path, "r", encoding="utf-8") as f:
-                creds = json.load(f)
-            tg = creds.get("telegram", {})
-            token = token or tg.get("bot_token", "")
-            chat_id = chat_id or tg.get("chat_id", "")
-        except Exception as e:
-            print(f"[telegram_inbox] credentials 읽기 실패: {e}", file=sys.stderr)
-    return token, chat_id
 
 
 def main():
@@ -253,7 +245,7 @@ def main():
     parser.add_argument("--intermd-file", type=str, default=str(DEFAULT_INTERMD_FILE), help="Path to intermd_answer.json")
     args = parser.parse_args()
 
-    token, chat_id = get_telegram_credentials(Path(args.credentials))
+    token, chat_id = notify.resolve_credentials(credentials_path=args.credentials)
     if not token or not chat_id:
         print("[telegram_inbox] 경고: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID가 누락되었습니다.", file=sys.stderr)
         sys.exit(0)

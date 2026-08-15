@@ -24,13 +24,13 @@ import json
 import os
 import re
 import sys
-import tempfile
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 import common
+from common import KST as kst, parse_dd_date
 import doctorville
 import notify
 
@@ -41,25 +41,6 @@ ENTER_BTN_WAIT_MS = 10000  # 상세 페이지에서 입장 버튼이 뜨는지 �
 
 def save_screenshot(page, tag: str) -> str:
     return common.save_screenshot(page, f"seminar_live_{tag}")
-
-
-def parse_dd_date(date_str: str | None) -> tuple[datetime | None, datetime | None]:
-    """Parse Doctorville date string like '2026-08-10(월) 13:00 ~ 14:00' into KST datetimes.
-
-    Returns (start_datetime, end_datetime) tuple, or (None, None) if parsing fails.
-    """
-    if not date_str or not isinstance(date_str, str):
-        return None, None
-    m = re.search(r"(\d{4}-\d{2}-\d{2})\s*\([^)]+\)\s*(\d{2}:\d{2})\s*~\s*(\d{2}:\d{2})", date_str)
-    if not m:
-        return None, None
-    d_str, s_str, e_str = m.groups()
-    try:
-        start_dt = datetime.strptime(f"{d_str} {s_str}", "%Y-%m-%d %H:%M").replace(tzinfo=common.KST)
-        end_dt = datetime.strptime(f"{d_str} {e_str}", "%Y-%m-%d %H:%M").replace(tzinfo=common.KST)
-        return start_dt, end_dt
-    except ValueError:
-        return None, None
 
 
 def upgrade_to_v2(state: dict) -> dict:
@@ -107,6 +88,10 @@ def upgrade_to_v2(state: dict) -> dict:
     return state
 
 
+def _default_account_state() -> dict:
+    return {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}, "survey": {}}
+
+
 def merge_state(state: dict, today_str: str, accounts: list[str] = None) -> dict:
     if accounts is None:
         accounts = ["bjh7790", "wonju"]
@@ -117,58 +102,29 @@ def merge_state(state: dict, today_str: str, accounts: list[str] = None) -> dict
         return {
             "version": 2,
             "date": today_str,
-            "accounts": {
-                acc: {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}, "survey": {}}
-                for acc in accounts
-            }
+            "accounts": {acc: _default_account_state() for acc in accounts},
         }
     state["version"] = 2
     acc_map = state.setdefault("accounts", {})
     for acc in accounts:
-        if acc not in acc_map:
-            acc_map[acc] = {"entered": [], "blocks": {"lunch": [], "evening": [], "manual": []}, "survey": {}}
-        else:
-            acc_map[acc].setdefault("entered", [])
-            acc_map[acc].setdefault("blocks", {"lunch": [], "evening": [], "manual": []})
-            acc_map[acc].setdefault("survey", {})
+        acc_data = acc_map.setdefault(acc, _default_account_state())
+        acc_data.setdefault("entered", [])
+        acc_data.setdefault("blocks", {"lunch": [], "evening": [], "manual": []})
+        acc_data.setdefault("survey", {})
     return state
 
 
 def load_state(path: Path | str, today_str: str = None) -> dict:
     if today_str is None:
-        kst = timezone(timedelta(hours=9))
-        today_str = datetime.now(kst).strftime("%Y-%m-%d")
-    filepath = Path(path)
-    if filepath.exists():
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = {}
-    else:
-        data = {}
+        today_str = datetime.now(common.KST).strftime("%Y-%m-%d")
+    data = common.read_json(path, default={})
     if isinstance(data, dict) and data:
         data = upgrade_to_v2(data)
     return merge_state(data, today_str)
 
 
 def save_state(state: dict, path: Path | str) -> None:
-    filepath = Path(path)
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = tempfile.NamedTemporaryFile("w", dir=filepath.parent, delete=False, encoding="utf-8")
-    try:
-        json.dump(state, temp_file, ensure_ascii=False, indent=2)
-        temp_file.flush()
-        os.fsync(temp_file.fileno())
-        temp_file.close()
-        os.replace(temp_file.name, filepath)
-    except Exception:
-        if os.path.exists(temp_file.name):
-            try:
-                os.remove(temp_file.name)
-            except OSError:
-                pass
-        raise
+    common.write_json_atomic(path, state)
 
 
 def update_entered_state(
@@ -217,8 +173,7 @@ def update_entered_state(
 def determine_block_name(block_arg: str) -> str:
     if block_arg != "auto":
         return block_arg
-    kst = timezone(timedelta(hours=9))
-    hour = datetime.now(kst).hour
+    hour = datetime.now(common.KST).hour
     return "lunch" if hour < 16 else "evening"
 
 
@@ -323,16 +278,17 @@ def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
         }
 
     try:
-        popup.wait_for_load_state("domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
-    except PlaywrightTimeoutError:
-        pass
+        try:
+            popup.wait_for_load_state("domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            pass
 
-    popup.wait_for_timeout(stay_seconds * 1000)
-
-    try:
-        popup.close()
-    except Exception:
-        pass
+        popup.wait_for_timeout(stay_seconds * 1000)
+    finally:
+        try:
+            popup.close()
+        except Exception:
+            pass
 
     return {
         "status": "success",
@@ -481,7 +437,6 @@ def run_account(
             common.goto_with_retry(page, doctorville.ATTEND_URL, wait_until="load", timeout_ms=DEFAULT_TIMEOUT_MS)
             if not doctorville.ensure_logged_in(page, creds):
                 output["live_seminar"] = {"status": "failed", "message": "로그인 실패"}
-                browser.close()
                 return output
 
             output["live_seminar"] = task_live_seminar(
@@ -608,8 +563,7 @@ def main():
     else:
         accounts = [args.account]
 
-    kst = timezone(timedelta(hours=9))
-    today_str = datetime.now(kst).strftime("%Y-%m-%d")
+    today_str = datetime.now(common.KST).strftime("%Y-%m-%d")
     state = load_state(state_file, today_str)
     block_name = determine_block_name(args.block)
 
@@ -633,7 +587,7 @@ def main():
     print(json.dumps(results, ensure_ascii=False, indent=2))
 
     failed = any(
-        r.get("live_seminar", {}).get("status") == "failed" or r.get("error")
+        r.get("live_seminar", {}).get("status") in {"failed", "unverified", "blocked"} or r.get("error")
         for r in results.values()
     )
 

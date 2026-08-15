@@ -239,17 +239,11 @@ def load_credentials(path: Path, account: str) -> dict:
 
 
 def load_quiz_answers() -> dict:
-    if not QUIZ_ANSWERS_PATH.exists():
-        return {}
-    with open(QUIZ_ANSWERS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return common.read_json(QUIZ_ANSWERS_PATH, default={})
 
 
 def load_quiz_answers_legacy() -> dict:
-    if not LEGACY_ANSWERS_PATH.exists():
-        return {}
-    with open(LEGACY_ANSWERS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return common.read_json(LEGACY_ANSWERS_PATH, default={})
 
 
 def _record_answers(product: str, pairs: list[tuple[str, str]]) -> None:
@@ -260,11 +254,7 @@ def _record_answers(product: str, pairs: list[tuple[str, str]]) -> None:
     prod_dict = data.setdefault(key, {})
     for q_text, ans_text in pairs:
         prod_dict[q_text] = ans_text
-    tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp_file, QUIZ_ANSWERS_PATH)
+    common.write_json_atomic(QUIZ_ANSWERS_PATH, data)
 
 
 def _record_missing_placeholders(product: str, missing: list[dict]) -> int:
@@ -290,14 +280,8 @@ def _record_missing_placeholders(product: str, missing: list[dict]) -> int:
             continue
         prod_dict[q_text] = [PLACEHOLDER_MARKER, *options]
         added += 1
-    if not added:
-        return 0
-
-    tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp_file, QUIZ_ANSWERS_PATH)
+    if added:
+        common.write_json_atomic(QUIZ_ANSWERS_PATH, data)
     return added
 
 
@@ -309,11 +293,7 @@ def _evict_answers(product: str, q_texts: list[str]) -> None:
     if product in data:
         for q_text in q_texts:
             data[product].pop(q_text, None)
-        tmp_file = QUIZ_ANSWERS_PATH.with_suffix(".tmp")
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp_file, QUIZ_ANSWERS_PATH)
+        common.write_json_atomic(QUIZ_ANSWERS_PATH, data)
 
 
 def _evict_legacy_answers(product: str) -> None:
@@ -325,11 +305,7 @@ def _evict_legacy_answers(product: str) -> None:
     np = normalize_product(product)
     pruned = {k: v for k, v in data.items() if normalize_product(k) != np}
     if len(pruned) != len(data):
-        tmp_file = LEGACY_ANSWERS_PATH.with_suffix(".tmp")
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(pruned, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp_file, LEGACY_ANSWERS_PATH)
+        common.write_json_atomic(LEGACY_ANSWERS_PATH, pruned)
 
 
 # ---------------------------------------------------------------------------
@@ -345,25 +321,22 @@ def _evict_legacy_answers(product: str) -> None:
 # 하루가 지나면 사라지는데, 신청 이력은 방송일까지 며칠~몇 주 유지돼야 한다.
 # ---------------------------------------------------------------------------
 
-def load_applied(path: Path = None) -> dict:
-    path = Path(path or SEMINAR_APPLIED_PATH)
-    if not path.exists():
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+def load_applied(path: Path | str = None) -> dict:
+    return common.read_json(path or SEMINAR_APPLIED_PATH, default={})
+
+
+def _handle_learned_answers(source: str, product: str, pairs: list[tuple[str, str]]) -> int:
+    """Legacy 정답으로 성공 시 문제은행(quiz_answers.json)으로 승격하고 legacy에서 삭제."""
+    if source == "legacy":
+        _record_answers(product, pairs)
+        _evict_legacy_answers(product)
+        return len(pairs)
+    return 0
 
 
 def save_applied(data: dict, path: Path = None) -> None:
     path = Path(path or SEMINAR_APPLIED_PATH)
-    tmp_file = path.with_suffix(".tmp")
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
-        f.write("\n")
-    os.replace(tmp_file, path)
+    common.write_json_atomic(path, data, sort_keys=True)
 
 
 def applied_ids(data: dict, account: str) -> set:
@@ -409,9 +382,7 @@ def _entry_expiry(entry: dict, days: int, now):
 
     start = entry.get("start")
     if isinstance(start, str) and start:
-        # seminar_live는 doctorville을 import하므로 모듈 최상단에서 못 가져온다.
-        from seminar_live import parse_dd_date
-        s_dt, e_dt = parse_dd_date(start)
+        s_dt, e_dt = common.parse_dd_date(start)
         end = e_dt or s_dt
         if end is not None:
             return now > end, "past"
@@ -721,7 +692,10 @@ def task_attend(page, creds: dict) -> dict:
         result["message"] = f"출석 완료, {result['points']}P 적립."
     except PlaywrightTimeoutError:
         # 팝업 없이 바로 완료 처리되는 경우도 있음 — 달력 표식으로 재확인
-        page.reload(wait_until="domcontentloaded")
+        try:
+            common.reload_with_retry(page, wait_until="domcontentloaded")
+        except Exception:
+            pass
         if _attend_marked(page, today_cell):
             result["status"] = "success"
             result["verified_by"] = today_cell
@@ -1016,15 +990,7 @@ def task_quiz(page, creds: dict) -> dict:
         result["verified_by"] = ":text('정답입니다')"
         result["points"] = 500
         result["source"] = source
-        if source == "legacy":
-            # 사이트가 정답으로 확인해 준 답이다. 문항텍스트→보기텍스트로 옮기면
-            # 위치 기반 시퀀스보다 항상 낫다 — 복사만 하고 legacy를 남기면 영영
-            # 줄지 않아 파일을 지울 수 없다.
-            _record_answers(product, selected_pairs)
-            _evict_legacy_answers(product)
-            result["learned"] = len(selected_pairs)
-        else:
-            result["learned"] = 0
+        result["learned"] = _handle_learned_answers(source, product, selected_pairs)
         result["message"] = f"'{product}' 퀴즈 정답 ({source}), 500P 적립."
     except PlaywrightTimeoutError:
         try:
@@ -1052,15 +1018,10 @@ def task_quiz(page, creds: dict) -> dict:
             banner_class = page.locator("#btn_quiz_banner").get_attribute("class") or ""
             if "ico_finish" in banner_class:
                 result["status"] = "success"
-                result["verified_by"] = ":text('정답입니다')"
+                result["verified_by"] = "banner: ico_finish"
                 result["points"] = 500
                 result["source"] = source
-                if source == "legacy":
-                    _record_answers(product, selected_pairs)
-                    _evict_legacy_answers(product)
-                    result["learned"] = len(selected_pairs)
-                else:
-                    result["learned"] = 0
+                result["learned"] = _handle_learned_answers(source, product, selected_pairs)
                 result["message"] = f"'{product}' 퀴즈 완료 확인 (ico_finish, 출처: {source})."
             else:
                 result["status"] = "failed"
@@ -1189,10 +1150,16 @@ def task_seminar(page, creds: dict, account: str = None, applied_path: Path = No
     if failed:
         result["status"] = "unverified"
         result["message"] = f"신청 시도 후 상세 재확인 실패 — 완료 {len(applied)}건, 미검증 {len(failed)}건: {failed}{suffix}"
-    else:
+    elif applied:
         result["status"] = "success"
         result["verified_by"] = "a.btn_bn: 신청취소"
         result["message"] = f"신청 완료 {len(applied)}건{suffix}."
+    elif result["skipped_known"] > 0 or dirty:
+        result["status"] = "already_done"
+        result["message"] = f"신규 신청 대상 없음{suffix}."
+    else:
+        result["status"] = "skipped"
+        result["message"] = f"신청 가능한 세미나 없음{suffix}."
 
     return result
 
@@ -1262,20 +1229,21 @@ def run(account: str, credentials_path: Path, headless: bool, tasks: list[str]) 
             if not ensure_logged_in(page, creds):
                 for t in tasks:
                     output[t] = {"status": "failed", "message": "로그인 실패"}
-                browser.close()
                 return output
 
-            if "attend" in tasks:
-                output["attend"] = task_attend(page, creds)
-
-            if "quiz" in tasks:
-                output["quiz"] = task_quiz(page, creds)
-
-            if "seminar" in tasks:
-                output["seminar"] = task_seminar(page, creds, account=account)
-
-            if "precheck_quiz" in tasks:
-                output["precheck_quiz"] = run_precheck_quiz(page, str(credentials_path))
+            task_dispatch = {
+                "attend": lambda: task_attend(page, creds),
+                "quiz": lambda: task_quiz(page, creds),
+                "seminar": lambda: task_seminar(page, creds, account=account),
+                "precheck_quiz": lambda: run_precheck_quiz(page, str(credentials_path)),
+            }
+            for t in tasks:
+                if t in task_dispatch:
+                    try:
+                        output[t] = task_dispatch[t]()
+                    except Exception as e:
+                        output[t] = {"status": "failed", "message": f"{t} 중 예외 발생: {e}"}
+                        save_screenshot(page, f"{t}_error")
 
         except Exception as e:
             output["error"] = f"예외 발생: {e}"
@@ -1325,13 +1293,9 @@ def main():
         accounts = [args.account]
 
     all_results = {}
-    failed = False
     for acc in accounts:
         result = run(acc, credentials_path, headless=not args.headed, tasks=tasks)
         all_results[acc] = result
-        statuses = [result[t]["status"] for t in tasks if t in result]
-        if "failed" in statuses:
-            failed = True
 
     if len(accounts) == 1 and args.account != "all":
         print(json.dumps(all_results[accounts[0]], ensure_ascii=False, indent=2))
@@ -1346,6 +1310,12 @@ def main():
             if msg:
                 notify.send_telegram(msg, credentials_path=credentials_path)
 
+    failed = any(
+        acc_res.get(t, {}).get("status") in {"failed", "unverified", "blocked"}
+        for acc_res in all_results.values()
+        if isinstance(acc_res, dict)
+        for t in tasks
+    )
     sys.exit(1 if failed else 0)
 
 

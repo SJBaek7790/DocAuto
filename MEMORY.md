@@ -245,7 +245,11 @@ GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-
 
 **분리 못 한 대안 가설:** Azure 러너 IP가 해당 사이트 WAF에서 평판 페널티를 받고 있을 가능성. 로그만으로는 요청량과 IP평판을 구분할 수 없다. 구분 실험 = 같은 시각 집 IP에서 동일 스크립트 실행.
 
-**미적용 대응책:** `goto_with_retry` 백오프가 2초 고정이라 3회 시도가 17초에 끝난다 — 지수(5/15/45초)로 바꾸면 차단 창을 넘길 수 있다. 스텝 사이 60초 sleep도 후보. 2026-08-12의 부하 감축이 먼저 효과를 내는지 보고 판단한다.
+**적용된 대응책 (2026-08-15):**
+1. `common.reload_with_retry()` 추가 및 `doctorville.py` / `recon.py`의 `page.reload()` 교체.
+2. `goto_with_retry` / `reload_with_retry`에 지수 백오프(`3.0, 7.0, 15.0`초) 적용으로 WAF 일시 차단 창 회피.
+3. `doctorville.py:run()` 내 태스크(`attend`, `quiz`, `seminar`, `precheck_quiz`) 개별 `try-except` 격리로 단일 태스크 오류 시 잔여 태스크 보호.
+
 
 ---
 
@@ -292,7 +296,7 @@ GitHub `schedule`은 지연(최대 80분)·누락이 잦아 external cron (cron-
 ### daily_runner.py
 - **텔레그램 400 Bad Request:** 파싱 오류가 아니라 **길이 초과**였다. Playwright 예외(call log 포함 ~2400자)를 그대로 넣어 4096자 한도 초과. `notify.shorten()`(첫 줄·200자) + 4096자 안전망 + `HTTPError` 응답 body 로깅.
 - **닥터빌 120초 타임아웃:** 출석+퀴즈+세미나 순차 + 세미나 건수만큼 반복이라 초과. 닥터빌만 240초.
-- 실행 순서: 키메디 → 닥터빌×2 → HMP (HMP를 맨 뒤로, 사용자 요청).
+- 실행 순서: 닥터빌×2 → 키메디 → HMP → 익일 퀴즈 사전확인 (AGENTS.md 및 build_execution_plan 일치).
 
 ### seminar_survey.py
 - **headlessui 모달이 제출을 막음:** 임시저장 초안이 있으면 "작성 중인 정보를 불러왔습니다" 모달의 backdrop이 포인터 이벤트를 가로채 제출 클릭이 30초 타임아웃(실패한 실행이 초안을 남겨 재시도할수록 재현). `dismiss_alerts()`를 창 오픈 직후·제출 직전·직후에 호출.
