@@ -840,6 +840,25 @@ def task_quiz(page, creds: dict) -> dict:
     page.wait_for_timeout(1500)
     save_screenshot(page, "quiz_layer_open")
 
+    # 퀴즈 레이어가 열린 즉시 이미 완료 상태인지 확인 ('축하드립니다', '내일 다시 만나요' 배너)
+    has_congrats = False
+    try:
+        congrats_cnt = quiz_layer.locator(":text('축하드립니다')").count()
+        next_day_cnt = quiz_layer.locator(":text('내일 다시 만나요')").count()
+        if (isinstance(congrats_cnt, int) and congrats_cnt > 0) or (isinstance(next_day_cnt, int) and next_day_cnt > 0):
+            has_congrats = True
+    except (TypeError, Exception):
+        has_congrats = False
+
+    if has_congrats:
+        result["status"] = "already_done"
+        result["verified_by"] = ":text('축하드립니다')"
+        result["message"] = f"'{product}' 퀴즈 오늘 이미 완료 ('퀴즈 성공을 축하드립니다' 확인)."
+        close_btn = quiz_layer.locator(".btn_cancel, .btn_close, button:has-text('닫기')").first
+        if close_btn.is_visible():
+            close_btn.click()
+        return result
+
     question_areas = quiz_layer.locator(".question_area")
     qcount = question_areas.count()
     if qcount == 0:

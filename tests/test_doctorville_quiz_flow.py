@@ -133,3 +133,47 @@ def test_task_quiz_partial_wrong_answers_learning(tmp_path, monkeypatch):
     # legacy는 틀렸으므로 삭제
     legacy_data = json.loads(legacy_file.read_text(encoding="utf-8"))
     assert "우루사" not in legacy_data
+
+
+def test_task_quiz_already_done_on_popup_open(tmp_path, monkeypatch):
+    """팝업 열자마자 '축하드립니다' 또는 '내일 다시 만나요'가 있으면 already_done으로 처리."""
+    quiz_file = tmp_path / "quiz_answers.json"
+    quiz_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(doctorville, "QUIZ_ANSWERS_PATH", quiz_file)
+    monkeypatch.setattr(doctorville, "_get_today_quiz_product", lambda p: ("엔블로", "pid1", "qid1"))
+
+    mock_page = MagicMock()
+    mock_banner = MagicMock()
+    mock_banner.get_attribute.return_value = ""  # 배너에는 ico_finish가 없는 경우
+
+    mock_layer = MagicMock()
+    mock_close_btn = MagicMock()
+    mock_close_btn.is_visible.return_value = True
+
+    def layer_locator(sel):
+        if ":text('축하드립니다')" in sel:
+            return MagicMock(count=lambda: 1)
+        if ":text('내일 다시 만나요')" in sel:
+            return MagicMock(count=lambda: 1)
+        if ".btn_cancel" in sel or ".btn_close" in sel or "button:has-text('닫기')" in sel:
+            return MagicMock(first=mock_close_btn)
+        return MagicMock(count=lambda: 0, first=MagicMock(is_visible=lambda: False))
+
+    mock_layer.locator.side_effect = layer_locator
+
+    def page_locator(sel):
+        if sel == "#btn_quiz_banner":
+            return mock_banner
+        if sel == "#quizLayerPop":
+            return mock_layer
+        return MagicMock()
+
+    mock_page.locator.side_effect = page_locator
+
+    res = doctorville.task_quiz(mock_page, {"email": "test@test.com", "password": "pw"})
+
+    assert res["status"] == "already_done"
+    assert "verified_by" in res
+    assert "이미 완료" in res["message"]
+    mock_close_btn.click.assert_called()
+
