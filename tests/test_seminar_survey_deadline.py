@@ -23,10 +23,14 @@ def test_evaluate_survey_cutoff_before_deadline():
         "start": "2026-08-10(월) 13:00 ~ 14:00",
         "entered_at": "2026-08-10T13:05:00+09:00",
     }
-    # Deadline is 14:00 + 1h30m = 15:30 KST
-    now_kst = datetime(2026, 8, 10, 14, 30, tzinfo=KST)
-    res = evaluate_survey_cutoff(item, now_kst)
-    assert res == "not_ready"
+    # Window is 13:00+1h (14:00) ~ 14:00+1h (15:00) KST
+    # 13:30 KST is before open (14:00) -> not_ready
+    before_open = datetime(2026, 8, 10, 13, 30, tzinfo=KST)
+    assert evaluate_survey_cutoff(item, before_open) == "not_ready"
+
+    # 14:30 KST is within window -> ready
+    in_window = datetime(2026, 8, 10, 14, 30, tzinfo=KST)
+    assert evaluate_survey_cutoff(item, in_window) == "ready"
 
 
 def test_evaluate_survey_cutoff_after_deadline():
@@ -36,8 +40,8 @@ def test_evaluate_survey_cutoff_after_deadline():
         "start": "2026-08-10(월) 13:00 ~ 14:00",
         "entered_at": "2026-08-10T13:05:00+09:00",
     }
-    # 16:00 KST > 15:30 KST cutoff
-    now_kst = datetime(2026, 8, 10, 16, 0, tzinfo=KST)
+    # 15:30 KST > 15:00 KST cutoff -> closed
+    now_kst = datetime(2026, 8, 10, 15, 30, tzinfo=KST)
     res = evaluate_survey_cutoff(item, now_kst)
     assert res == "closed"
 
@@ -47,20 +51,22 @@ def test_get_survey_cutoff_start_end():
         "start": "2026-08-10(월) 13:00 ~ 14:00",
     }
     cutoff = get_survey_cutoff(item)
-    assert cutoff == datetime(2026, 8, 10, 15, 30, tzinfo=KST)
+    assert cutoff == datetime(2026, 8, 10, 15, 0, tzinfo=KST)
 
 
 def test_fallback_cutoff_start_only():
     item = {
         "start": "2026-08-10(월) 13:00",
     }
-    # start + 3h = 16:00 KST
+    # start + 2h = 15:00 KST
     cutoff = get_survey_cutoff(item)
-    assert cutoff == datetime(2026, 8, 10, 16, 0, tzinfo=KST)
+    assert cutoff == datetime(2026, 8, 10, 15, 0, tzinfo=KST)
 
-    before_now = datetime(2026, 8, 10, 15, 0, tzinfo=KST)
-    after_now = datetime(2026, 8, 10, 16, 30, tzinfo=KST)
+    before_now = datetime(2026, 8, 10, 13, 30, tzinfo=KST)
+    in_now = datetime(2026, 8, 10, 14, 30, tzinfo=KST)
+    after_now = datetime(2026, 8, 10, 15, 30, tzinfo=KST)
     assert evaluate_survey_cutoff(item, before_now) == "not_ready"
+    assert evaluate_survey_cutoff(item, in_now) == "ready"
     assert evaluate_survey_cutoff(item, after_now) == "closed"
 
 
@@ -68,13 +74,15 @@ def test_fallback_cutoff_entered_at_only():
     item = {
         "entered_at": "2026-08-10T13:00:00+09:00",
     }
-    # entered_at + 3h = 16:00 KST
+    # entered_at + 2h = 15:00 KST
     cutoff = get_survey_cutoff(item)
-    assert cutoff == datetime(2026, 8, 10, 16, 0, tzinfo=KST)
+    assert cutoff == datetime(2026, 8, 10, 15, 0, tzinfo=KST)
 
-    before_now = datetime(2026, 8, 10, 15, 0, tzinfo=KST)
-    after_now = datetime(2026, 8, 10, 16, 30, tzinfo=KST)
+    before_now = datetime(2026, 8, 10, 13, 30, tzinfo=KST)
+    in_now = datetime(2026, 8, 10, 14, 30, tzinfo=KST)
+    after_now = datetime(2026, 8, 10, 15, 30, tzinfo=KST)
     assert evaluate_survey_cutoff(item, before_now) == "not_ready"
+    assert evaluate_survey_cutoff(item, in_now) == "ready"
     assert evaluate_survey_cutoff(item, after_now) == "closed"
 
 
@@ -82,12 +90,13 @@ def test_naive_datetime_conversion():
     item = {
         "start": "2026-08-10(월) 13:00 ~ 14:00",
     }
-    # Cutoff: 15:30 KST
-    # Pass naive datetime (no tzinfo)
-    naive_before = datetime(2026, 8, 10, 14, 30)
-    naive_after = datetime(2026, 8, 10, 16, 0)
+    # Window: 14:00 ~ 15:00 KST
+    naive_before = datetime(2026, 8, 10, 13, 30)
+    naive_in = datetime(2026, 8, 10, 14, 30)
+    naive_after = datetime(2026, 8, 10, 15, 30)
 
     assert evaluate_survey_cutoff(item, naive_before) == "not_ready"
+    assert evaluate_survey_cutoff(item, naive_in) == "ready"
     assert evaluate_survey_cutoff(item, naive_after) == "closed"
 
 

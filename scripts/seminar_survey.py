@@ -423,22 +423,27 @@ def resolve_page(questions: list[dict], banks: dict) -> tuple[list[dict], list[d
     return plan, missing
 
 
-def get_survey_cutoff(item: dict) -> datetime | None:
+def get_survey_window(item: dict) -> tuple[datetime | None, datetime | None]:
+    """세미나 설문 가능 시간 창 (open_dt, close_dt) 반환.
+
+    시작 시간 1시간 후 ~ 끝나는 시간 1시간 후.
+    """
     if not isinstance(item, dict):
-        return None
+        return None, None
     start_str = item.get("start")
     if start_str and isinstance(start_str, str):
         s_dt, e_dt = parse_dd_date(start_str)
-        if e_dt:
-            return e_dt + timedelta(minutes=90)
         if s_dt:
-            return s_dt + timedelta(hours=3)
+            open_dt = s_dt + timedelta(hours=1)
+            end_dt = e_dt or (s_dt + timedelta(hours=1))
+            close_dt = end_dt + timedelta(hours=1)
+            return open_dt, close_dt
         m = re.search(r"(\d{4}-\d{2}-\d{2})\s*\([^)]+\)\s*(\d{2}:\d{2})", start_str)
         if m:
             d_str, s_str = m.groups()
             try:
                 s_dt = datetime.strptime(f"{d_str} {s_str}", "%Y-%m-%d %H:%M").replace(tzinfo=common.KST)
-                return s_dt + timedelta(hours=3)
+                return s_dt + timedelta(hours=1), s_dt + timedelta(hours=2)
             except ValueError:
                 pass
 
@@ -448,21 +453,35 @@ def get_survey_cutoff(item: dict) -> datetime | None:
             ent_dt = datetime.fromisoformat(ent_str)
             if ent_dt.tzinfo is None:
                 ent_dt = ent_dt.replace(tzinfo=common.KST)
-            return ent_dt + timedelta(hours=3)
+            return ent_dt + timedelta(hours=1), ent_dt + timedelta(hours=2)
         except (ValueError, TypeError):
             pass
-    return None
+    return None, None
+
+
+def get_survey_cutoff(item: dict) -> datetime | None:
+    """설문 마감 시각 (종료 1시간 후)."""
+    _, close_dt = get_survey_window(item)
+    return close_dt
 
 
 def evaluate_survey_cutoff(item: dict, now_dt: datetime = None) -> str:
+    """설문 시도 가능 여부 판정.
+    - 'ready': 설문 가능 시간대 (시작 1시간 후 ~ 종료 1시간 후, 또는 시간 정보 없음)
+    - 'not_ready': 설문 시작 전 (시작 1시간 후 이전)
+    - 'closed': 설문 마감 후 (종료 1시간 후 경과)
+    """
     if now_dt is None:
         now_dt = datetime.now(common.KST)
     elif now_dt.tzinfo is None:
         now_dt = now_dt.replace(tzinfo=common.KST)
-    cutoff = get_survey_cutoff(item)
-    if cutoff is not None and now_dt >= cutoff:
+
+    open_dt, close_dt = get_survey_window(item)
+    if open_dt is not None and now_dt < open_dt:
+        return "not_ready"
+    if close_dt is not None and now_dt > close_dt:
         return "closed"
-    return "not_ready"
+    return "ready"
 
 
 def placeholder_value(option_texts: list[str] | None):
@@ -793,23 +812,34 @@ def run_survey(
     if title:
         result["title"] = title
 
-    if page is None:
-        st = evaluate_survey_cutoff(item, now_dt)
-        result["status"] = st
-        if st == "closed" and state is not None and account:
+    timing = evaluate_survey_cutoff(item, now_dt)
+    if timing != "ready":
+        result["status"] = timing
+        if timing == "closed" and state is not None and account:
             mark_survey_status(state, account, sid_val, "closed", state_file)
         prefix = f"[{title}] " if title else ""
-        result["message"] = f"{prefix}{st}: page is None"
+        if timing == "not_ready":
+            result["message"] = f"{prefix}설문 시작 전 (시작 1시간 후부터 가능)."
+        elif timing == "closed":
+            result["message"] = f"{prefix}설문 마감 (종료 1시간 후 경과)."
+        else:
+            result["message"] = f"{prefix}{timing}"
+        return result
+
+    if page is None:
+        result["status"] = "ready"
+        prefix = f"[{title}] " if title else ""
+        result["message"] = f"{prefix}ready: page is None"
         return result
 
     survey_page, err = open_survey(page, seminar_id)
     if survey_page is None:
         st = evaluate_survey_cutoff(item, now_dt)
-        result["status"] = st
-        if st == "closed" and state is not None and account:
+        result["status"] = "closed" if st == "closed" else "not_ready"
+        if result["status"] == "closed" and state is not None and account:
             mark_survey_status(state, account, sid_val, "closed", state_file)
         prefix = f"[{title}] " if title else ""
-        result["message"] = f"{prefix}{st}: {err}"
+        result["message"] = f"{prefix}{result['status']}: {err}"
         return result
 
     try:
@@ -832,11 +862,11 @@ def run_survey(
                         result["message"] = f"설문 제출 시도했으나 완료 화면 문구 미확인({pages_done}페이지)."
                 else:
                     st = evaluate_survey_cutoff(item, now_dt)
-                    result["status"] = st
-                    if st == "closed" and state is not None and account:
+                    result["status"] = "closed" if st == "closed" else "not_ready"
+                    if result["status"] == "closed" and state is not None and account:
                         mark_survey_status(state, account, sid_val, "closed", state_file)
                     prefix = f"[{title}] " if title else ""
-                    result["message"] = f"{prefix}{st}: 설문 창에 문항이 없음."
+                    result["message"] = f"{prefix}{result['status']}: 설문 창에 문항이 없음."
                 return result
 
             # 진행 버튼을 눌렀는데 같은 문항이 다시 나오면 앞으로 못 간 것이다

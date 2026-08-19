@@ -41,3 +41,39 @@ def test_get_notify_level_default(monkeypatch):
     assert get_notify_level() == "all"
 
 
+def test_is_enter_window():
+    from datetime import datetime
+    from common import KST
+    from seminar_live import is_enter_window
+
+    # Seminar running 13:00 ~ 14:00. Allowed window: 12:00 ~ 14:00
+    start_str = "2026-08-10(월) 13:00 ~ 14:00"
+
+    # 11:30 KST (< 12:00) -> False (too early)
+    too_early = datetime(2026, 8, 10, 11, 30, tzinfo=KST)
+    can_enter, reason, _, _ = is_enter_window(start_str, too_early)
+    assert can_enter is False
+    assert "입장 가능 시간 전" in reason
+
+    # 12:00 KST (boundary) -> True
+    boundary_start = datetime(2026, 8, 10, 12, 0, tzinfo=KST)
+    can_enter, _, _, _ = is_enter_window(start_str, boundary_start)
+    assert can_enter is True
+
+    # 13:30 KST (during broadcast) -> True
+    during = datetime(2026, 8, 10, 13, 30, tzinfo=KST)
+    can_enter, _, _, _ = is_enter_window(start_str, during)
+    assert can_enter is True
+
+    # 14:00 KST (boundary end) -> True
+    boundary_end = datetime(2026, 8, 10, 14, 0, tzinfo=KST)
+    can_enter, _, _, _ = is_enter_window(start_str, boundary_end)
+    assert can_enter is True
+
+    # 14:01 KST (> 14:00) -> False (ended)
+    after_end = datetime(2026, 8, 10, 14, 1, tzinfo=KST)
+    can_enter, reason, _, _ = is_enter_window(start_str, after_end)
+    assert can_enter is False
+    assert "세미나 종료" in reason
+
+

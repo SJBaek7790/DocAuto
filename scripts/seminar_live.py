@@ -24,7 +24,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -229,7 +229,36 @@ def get_live_seminar_ids(page) -> list[str]:
 # 세미나 상세 입장 & 스트리밍 창 팝업 대기
 # ---------------------------------------------------------------------------
 
-def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
+def is_enter_window(start_str_or_item, now_dt: datetime = None) -> tuple[bool, str, datetime | None, datetime | None]:
+    """라이브 입장 가능 시간대인지 확인: [시작 1시간 전 ~ 끝나는 시간].
+
+    Returns: (can_enter, reason, start_dt, end_dt)
+    """
+    if now_dt is None:
+        now_dt = datetime.now(common.KST)
+    elif now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=common.KST)
+
+    start_str = start_str_or_item.get("start") if isinstance(start_str_or_item, dict) else start_str_or_item
+    if not start_str or not isinstance(start_str, str):
+        return True, "시간 미확인", None, None
+
+    s_dt, e_dt = parse_dd_date(start_str)
+    if s_dt is None:
+        return True, "시간 파싱 불가", None, None
+
+    earliest = s_dt - timedelta(hours=1)
+    latest = e_dt or (s_dt + timedelta(hours=1))
+
+    if now_dt < earliest:
+        return False, f"입장 가능 시간 전 (시작 1시간 전({earliest.strftime('%H:%M')})부터 가능, 현재 {now_dt.strftime('%H:%M')})", s_dt, latest
+    if now_dt > latest:
+        return False, f"세미나 종료({latest.strftime('%H:%M')})로 입장 불가 (현재 {now_dt.strftime('%H:%M')})", s_dt, latest
+
+    return True, "입장 가능 시간", s_dt, latest
+
+
+def enter_and_wait(page, seminar_id: str, stay_seconds: int, now_dt: datetime = None) -> dict:
     """단일 seminarId 상세 페이지로 이동해 '입장하기' 클릭 → 팝업창에서 stay_seconds초 대기 후 닫기."""
     detail_url = f"{doctorville.SEMINAR_DETAIL_URL}?seminarId={seminar_id}"
     common.goto_with_retry(page, detail_url, wait_until="domcontentloaded", timeout_ms=DEFAULT_TIMEOUT_MS)
@@ -241,9 +270,18 @@ def enter_and_wait(page, seminar_id: str, stay_seconds: int) -> dict:
             return dd ? dd.innerText.trim() : '';
         }
     """)
-    start_dt, _ = parse_dd_date(date_text)
+    start_dt, end_dt = parse_dd_date(date_text)
     start_str = date_text if start_dt is not None else None
     entered_at_str = datetime.now(common.KST).isoformat()
+
+    can_enter, reason, _, _ = is_enter_window(date_text, now_dt)
+    if not can_enter:
+        return {
+            "status": "skipped",
+            "message": f"세미나 {seminar_id}: {reason}",
+            "start": start_str,
+            "entered_at": entered_at_str,
+        }
 
     btn = page.locator("a.btn_bn").first
     if btn.count() == 0 or not btn.is_visible():

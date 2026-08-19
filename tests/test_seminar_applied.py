@@ -52,6 +52,24 @@ def test_record_applied_keys_by_string():
     assert "applied_at" in data["bjh7790"]["5533"]
 
 
+def test_record_applied_numeric_fields():
+    data = record_applied({}, "bjh7790", 5533, "당뇨병 최신 치료", "2026-08-20(목) 13:30 ~ 15:00")
+    entry = data["bjh7790"]["5533"]
+    assert entry["title"] == "당뇨병 최신 치료"
+    assert entry["start"] == "2026-08-20(목) 13:30 ~ 15:00"
+    assert entry["date"] == "2026-08-20"
+    assert entry["start_date"] == "2026-08-20"
+    assert entry["year"] == 2026
+    assert entry["month"] == 8
+    assert entry["day"] == 20
+    assert entry["start_time"] == "13:30"
+    assert entry["start_hour"] == 13
+    assert entry["start_minute"] == 30
+    assert entry["end_time"] == "15:00"
+    assert entry["end_hour"] == 15
+    assert entry["end_minute"] == 0
+
+
 # --- 날짜 지난 항목 정리 ----------------------------------------------------
 
 def test_prune_drops_seminar_whose_broadcast_ended():

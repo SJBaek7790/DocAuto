@@ -366,6 +366,21 @@ def record_applied(data: dict, account: str, seminar_id, title: str = "", start:
         entry["title"] = title
     if start:
         entry["start"] = start
+        s_dt, e_dt = common.parse_dd_date(start)
+        if s_dt is not None:
+            entry["date"] = s_dt.strftime("%Y-%m-%d")
+            entry["start_date"] = s_dt.strftime("%Y-%m-%d")
+            entry["year"] = s_dt.year
+            entry["month"] = s_dt.month
+            entry["day"] = s_dt.day
+            entry["start_time"] = s_dt.strftime("%H:%M")
+            entry["start_hour"] = s_dt.hour
+            entry["start_minute"] = s_dt.minute
+            if e_dt is not None:
+                entry["end_time"] = e_dt.strftime("%H:%M")
+                entry["end_hour"] = e_dt.hour
+                entry["end_minute"] = e_dt.minute
+
     data.setdefault(account, {})[str(seminar_id)] = entry
     return data
 
@@ -1059,9 +1074,20 @@ def _seminar_detail_meta(page) -> tuple[str, str]:
     try:
         return tuple(page.evaluate("""
             () => {
-                const t = document.querySelector('.tit, h2, h3');
+                const banned = /^(라이브세미나|라이브\\s*세미나|닥터빌|세미나|상세|사전신청|신청하기|목록|다시보기)$/;
+                const candidates = Array.from(document.querySelectorAll(
+                    '.seminar_view .tit, .view_title, .view_tit, .detail_tit, dl.seminar_info dt, .tit_area .tit, .tit_area, h3.tit, h4.tit, .tit, dt, h3, h4, strong'
+                ));
+                let title = '';
+                for (const el of candidates) {
+                    const text = (el.innerText || '').trim();
+                    if (text && !banned.test(text.replace(/\\s+/g, '')) && text.length >= 2) {
+                        title = text;
+                        break;
+                    }
+                }
                 const d = document.querySelector('dd.date');
-                return [t ? t.innerText.trim() : '', d ? d.innerText.trim() : ''];
+                return [title, d ? d.innerText.trim() : ''];
             }
         """))
     except Exception:
