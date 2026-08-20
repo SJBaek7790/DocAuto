@@ -1,21 +1,5 @@
 {
   "bjh7790": {
-    "5573": {
-      "applied_at": "2026-08-13T17:02:46.922445+09:00",
-      "date": "2026-08-20",
-      "day": 20,
-      "end_hour": 14,
-      "end_minute": 0,
-      "end_time": "14:00",
-      "month": 8,
-      "start": "2026-08-20(목) 13:00 ~ 14:00",
-      "start_date": "2026-08-20",
-      "start_hour": 13,
-      "start_minute": 0,
-      "start_time": "13:00",
-      "title": "라이브세미나",
-      "year": 2026
-    },
     "5574": {
       "applied_at": "2026-08-18T12:33:43.450373+09:00",
       "date": "2026-08-21",
@@ -383,25 +367,25 @@
       "start_time": "13:00",
       "title": "엠서클 통합회원",
       "year": 2026
+    },
+    "5597": {
+      "applied_at": "2026-08-20T16:42:12.628561+09:00",
+      "date": "2026-09-09",
+      "day": 9,
+      "end_hour": 19,
+      "end_minute": 30,
+      "end_time": "19:30",
+      "month": 9,
+      "start": "2026-09-09(수) 18:00 ~ 19:30",
+      "start_date": "2026-09-09",
+      "start_hour": 18,
+      "start_minute": 0,
+      "start_time": "18:00",
+      "title": "엠서클 통합회원",
+      "year": 2026
     }
   },
   "wonju": {
-    "5573": {
-      "applied_at": "2026-08-13T17:03:51.130673+09:00",
-      "date": "2026-08-20",
-      "day": 20,
-      "end_hour": 14,
-      "end_minute": 0,
-      "end_time": "14:00",
-      "month": 8,
-      "start": "2026-08-20(목) 13:00 ~ 14:00",
-      "start_date": "2026-08-20",
-      "start_hour": 13,
-      "start_minute": 0,
-      "start_time": "13:00",
-      "title": "라이브세미나",
-      "year": 2026
-    },
     "5574": {
       "applied_at": "2026-08-18T12:34:49.025787+09:00",
       "date": "2026-08-21",
@@ -767,6 +751,22 @@
       "start_hour": 13,
       "start_minute": 0,
       "start_time": "13:00",
+      "title": "엠서클 통합회원",
+      "year": 2026
+    },
+    "5597": {
+      "applied_at": "2026-08-20T16:44:06.828384+09:00",
+      "date": "2026-09-09",
+      "day": 9,
+      "end_hour": 19,
+      "end_minute": 30,
+      "end_time": "19:30",
+      "month": 9,
+      "start": "2026-09-09(수) 18:00 ~ 19:30",
+      "start_date": "2026-09-09",
+      "start_hour": 18,
+      "start_minute": 0,
+      "start_time": "18:00",
       "title": "엠서클 통합회원",
       "year": 2026
     }
