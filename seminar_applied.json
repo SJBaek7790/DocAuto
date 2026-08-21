@@ -431,6 +431,22 @@
       "start_time": "12:30",
       "title": "엠서클 통합회원",
       "year": 2026
+    },
+    "5602": {
+      "applied_at": "2026-08-21T17:32:46.990867+09:00",
+      "date": "2026-08-31",
+      "day": 31,
+      "end_hour": 14,
+      "end_minute": 0,
+      "end_time": "14:00",
+      "month": 8,
+      "start": "2026-08-31(월) 13:00 ~ 14:00",
+      "start_date": "2026-08-31",
+      "start_hour": 13,
+      "start_minute": 0,
+      "start_time": "13:00",
+      "title": "엠서클 통합회원",
+      "year": 2026
     }
   },
   "wonju": {
@@ -863,6 +879,22 @@
       "start_hour": 12,
       "start_minute": 30,
       "start_time": "12:30",
+      "title": "엠서클 통합회원",
+      "year": 2026
+    },
+    "5602": {
+      "applied_at": "2026-08-21T17:33:43.876200+09:00",
+      "date": "2026-08-31",
+      "day": 31,
+      "end_hour": 14,
+      "end_minute": 0,
+      "end_time": "14:00",
+      "month": 8,
+      "start": "2026-08-31(월) 13:00 ~ 14:00",
+      "start_date": "2026-08-31",
+      "start_hour": 13,
+      "start_minute": 0,
+      "start_time": "13:00",
       "title": "엠서클 통합회원",
       "year": 2026
     }
