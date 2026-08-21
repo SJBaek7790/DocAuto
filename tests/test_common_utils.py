@@ -40,6 +40,16 @@ def test_read_json_reads_valid_dict_and_list(tmp_path):
     assert read_json(l_file) == ["가", "나", 123]
 
 
+def test_read_json_handles_trailing_commas(tmp_path):
+    trailing_dict = tmp_path / "trailing_dict.json"
+    trailing_dict.write_text('{\n  "a": 1,\n  "b": "test",\n}\n', encoding="utf-8")
+    assert read_json(trailing_dict) == {"a": 1, "b": "test"}
+
+    trailing_list = tmp_path / "trailing_list.json"
+    trailing_list.write_text('[\n  "x",\n  "y",\n]\n', encoding="utf-8")
+    assert read_json(trailing_list) == ["x", "y"]
+
+
 # --- write_json_atomic 단위 테스트 ------------------------------------------
 
 def test_write_json_atomic_creates_parent_dir_and_file(tmp_path):

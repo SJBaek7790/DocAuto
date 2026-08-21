@@ -63,14 +63,22 @@ def read_credentials(path: Path | str) -> dict:
 
 
 def read_json(path: Path | str, default=None) -> dict | list:
-    """JSON 파일을 안전하게 읽어 dict/list로 반환. 파일 없거나 오류 시 default 반환."""
+    """JSON 파일을 안전하게 읽어 dict/list로 반환. 후행 쉼표(trailing comma) 등 허용."""
     p = Path(path)
     if not p.exists():
         return {} if default is None else default
     try:
         with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if data is not None else ({} if default is None else default)
+            content = f.read()
+        if not content.strip():
+            return {} if default is None else default
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            # 후행 쉼표(trailing comma) 보정 (예: {"a": 1,} or [1, 2,])
+            relaxed = re.sub(r",\s*([\]}])", r"\1", content)
+            data = json.loads(relaxed)
+        return data if data is not None else ({} if default is None else default)
     except Exception:
         return {} if default is None else default
 
